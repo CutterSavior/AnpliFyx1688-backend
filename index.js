@@ -654,6 +654,54 @@ app.delete('/api/orders/:orderId', requireAuth, async (req, res) => {
   }
 });
 
+// 前端期望的缺失 API 端點
+// 錢包貨幣端點
+app.post('/api/anon/v1/wallet/currency', (req, res) => {
+  res.json({
+    code: 200,
+    data: [
+      { id: 1, symbol: 'USDT', name: 'Tether USD', balance: 1000.00 },
+      { id: 2, symbol: 'BTC', name: 'Bitcoin', balance: 0.001 },
+      { id: 3, symbol: 'ETH', name: 'Ethereum', balance: 0.1 }
+    ]
+  });
+});
+
+// 支援列表端點
+app.post('/api/anon/v1/support/list', (req, res) => {
+  res.json({
+    code: 200,
+    data: []
+  });
+});
+
+// 通知列表端點
+app.post('/api/anon/v1/notice/list', (req, res) => {
+  res.json({
+    code: 200,
+    data: []
+  });
+});
+
+// 通訊 token 端點
+app.post('/api/anon/v1/comm/token', (req, res) => {
+  res.json({
+    code: 200,
+    data: {
+      token: 'mock-session-token',
+      expires: Date.now() + 3600000
+    }
+  });
+});
+
+// 合約項目端點
+app.post('/api/anon/v22/contract/item', (req, res) => {
+  res.json({
+    code: 200,
+    data: []
+  });
+});
+
 // Socket
 io.on('connection', socket => {
   console.log('socket connected', socket.id);
