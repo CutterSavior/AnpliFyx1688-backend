@@ -22,7 +22,8 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 // 判斷是否在生產環境且沒有數據庫
 const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER;
 const hasDatabase = process.env.DATABASE_URL;
-const useMemoryStore = isProduction && !hasDatabase;
+// 強制在 Render 上使用記憶體模式
+const useMemoryStore = process.env.RENDER ? true : (isProduction && !hasDatabase);
 
 // 只在有數據庫時初始化連接池
 let pool = null;
