@@ -1,31 +1,38 @@
-FROM node:18-alpine
-
-# Set working directory
+# 使用多階段構建優化映像大小
+FROM node:18-alpine AS base
 WORKDIR /app
 
-# Copy package files
+# 安裝必要的系統依賴
+RUN apk add --no-cache \
+    dumb-init \
+    curl \
+    && rm -rf /var/cache/apk/*
+
+# 複製package文件並安裝依賴
 COPY package*.json ./
+RUN if [ -f package-lock.json ]; then \
+        npm ci --only=production && npm cache clean --force; \
+    else \
+        npm install --only=production && npm cache clean --force; \
+    fi
 
-# Install dependencies
-RUN npm ci --only=production
+# 複製應用程式碼
+COPY . .
 
-# Copy source code
-COPY src/ ./src/
+# 創建非root用戶
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S backend -u 1001
 
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S backend -u 1001
-
-# Change ownership of the app directory
+# 設置適當的權限
 RUN chown -R backend:nodejs /app
 USER backend
 
-# Expose port
+# 健康檢查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3000/health || exit 1
+
 EXPOSE 3000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"
-
-# Start application
-CMD ["node", "src/app.js"]
+# 使用dumb-init作為PID 1
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["npm", "start"]
