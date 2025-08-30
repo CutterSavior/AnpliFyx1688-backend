@@ -804,13 +804,3 @@ app.post('/api/anon/v22/contract/item', (req, res) => {
 io.on('connection', socket => {
   console.log('socket connected', socket.id);
 });
-
-// 啟動服務器
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`🎉 服務已上線`);
-  console.log(`🔗 後端網址: https://anplifyx1688-backend.onrender.com`);
-  console.log(`📡 API 基本 URL: http://localhost:${PORT}/api`);
-  console.log(`🏥 健康檢查: http://localhost:${PORT}/health`);
-  console.log(`📝 指定網域的交友URL: https://render.com/docs/web-services#port-binding`);
-});
