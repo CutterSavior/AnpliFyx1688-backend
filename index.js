@@ -45,6 +45,25 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@postgres:5432/exchange'
 });
 
+// 判斷是否在生產環境且沒有數據庫
+const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER;
+const hasDatabase = process.env.DATABASE_URL;
+const useMemoryStore = isProduction && !hasDatabase;
+
+console.log('🔧 Configuration:');
+console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log(`   Render: ${process.env.RENDER ? 'true' : 'false'}`);
+console.log(`   Database URL: ${hasDatabase ? 'configured' : 'not configured'}`);
+console.log(`   Memory Store: ${useMemoryStore ? 'enabled' : 'disabled'}`);
+
+// 記憶體存儲（當沒有數據庫時使用）
+let memoryStore = {
+  users: [],
+  orders: [],
+  nextUserId: 1,
+  nextOrderId: 1
+};
+
 // JWT 認證中間件
 const authenticateToken = (req, res, next) => {
   const token = req.headers.auth || req.headers.authorization?.replace('Bearer ', '');
@@ -236,15 +255,23 @@ async function startApplication() {
   try {
     console.log('Starting application...');
     
-    // 初始化數據庫
-    await ensureDbInit();
+    // 只在有數據庫時初始化數據庫
+    if (!useMemoryStore) {
+      console.log('🗄️ Initializing database...');
+      await ensureDbInit();
+      console.log('📊 Database initialized and ready');
+    } else {
+      console.log('💾 Using memory store (no database required)');
+    }
     
     // 啟動HTTP服務器
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, () => {
       console.log(`🚀 Backend server listening on port ${PORT}`);
-      console.log(`📊 Database initialized and ready`);
       console.log(`🔐 JWT authentication enabled`);
+      if (useMemoryStore) {
+        console.log('⚠️  Memory store mode - data will not persist between restarts');
+      }
     });
     
   } catch (err) {
@@ -278,22 +305,60 @@ app.post('/api/auth/register', async (req, res) => {
 
   try {
     const hashedPassword = await bcrypt.hash(password, 12);
-    const r = await pool.query(
-      'INSERT INTO users(username, email, password_hash) VALUES($1, $2, $3) RETURNING id, username, email',
-      [username, email, hashedPassword]
-    );
     
-    const user = r.rows[0];
-    const token = generateToken(user.id, user.username);
-    
-    res.json({
-      code: 200,
-      message: '註冊成功',
-      data: {
-        user: { id: user.id, username: user.username, email: user.email },
-        token
+    if (useMemoryStore) {
+      // 記憶體存儲模式
+      const existingUser = memoryStore.users.find(u => 
+        u.username === username || u.email === email
+      );
+      
+      if (existingUser) {
+        return res.status(409).json({ 
+          code: 409, 
+          message: '用戶名或信箱已存在' 
+        });
       }
-    });
+      
+      const user = {
+        id: memoryStore.nextUserId++,
+        username,
+        email,
+        password_hash: hashedPassword,
+        status: 'active',
+        balance: 0,
+        created_at: new Date()
+      };
+      
+      memoryStore.users.push(user);
+      const token = generateToken(user.id, user.username);
+      
+      res.json({
+        code: 200,
+        message: '註冊成功',
+        data: {
+          user: { id: user.id, username: user.username, email: user.email },
+          token
+        }
+      });
+    } else {
+      // 數據庫模式
+      const r = await pool.query(
+        'INSERT INTO users(username, email, password_hash) VALUES($1, $2, $3) RETURNING id, username, email',
+        [username, email, hashedPassword]
+      );
+      
+      const user = r.rows[0];
+      const token = generateToken(user.id, user.username);
+      
+      res.json({
+        code: 200,
+        message: '註冊成功',
+        data: {
+          user: { id: user.id, username: user.username, email: user.email },
+          token
+        }
+      });
+    }
   } catch (err) {
     if (err.code === '23505') {
       return res.status(409).json({ 
@@ -320,19 +385,36 @@ app.post('/api/auth/login', async (req, res) => {
   }
 
   try {
-    const r = await pool.query(
-      'SELECT id, username, email, password_hash, status FROM users WHERE username = $1 OR email = $1',
-      [username]
-    );
+    let user;
     
-    if (!r.rows.length) {
-      return res.status(401).json({ 
-        code: 401, 
-        message: '用戶名或密碼錯誤' 
-      });
+    if (useMemoryStore) {
+      // 記憶體存儲模式
+      user = memoryStore.users.find(u => 
+        u.username === username || u.email === username
+      );
+      
+      if (!user) {
+        return res.status(401).json({ 
+          code: 401, 
+          message: '用戶名或密碼錯誤' 
+        });
+      }
+    } else {
+      // 數據庫模式
+      const r = await pool.query(
+        'SELECT id, username, email, password_hash, status FROM users WHERE username = $1 OR email = $1',
+        [username]
+      );
+      
+      if (!r.rows.length) {
+        return res.status(401).json({ 
+          code: 401, 
+          message: '用戶名或密碼錯誤' 
+        });
+      }
+      
+      user = r.rows[0];
     }
-
-    const user = r.rows[0];
     
     if (user.status !== 'active') {
       return res.status(403).json({ 
