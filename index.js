@@ -15,17 +15,52 @@ const io = new Server(server, { cors: { origin: '*' } });
 app.use(cors());
 app.use(bodyParser.json());
 
+// JWT 密鑰配置
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-change-in-production';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
+
+// 判斷是否在生產環境且沒有數據庫
+const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER;
+const hasDatabase = process.env.DATABASE_URL;
+const useMemoryStore = isProduction && !hasDatabase;
+
+// 只在有數據庫時初始化連接池
+let pool = null;
+if (hasDatabase) {
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@postgres:5432/exchange'
+  });
+}
+
+console.log('🔧 Configuration:');
+console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log(`   Render: ${process.env.RENDER ? 'true' : 'false'}`);
+console.log(`   Database URL: ${hasDatabase ? 'configured' : 'not configured'}`);
+console.log(`   Memory Store: ${useMemoryStore ? 'enabled' : 'disabled'}`);
+
 // 健康檢查端點
 app.get('/health', async (req, res) => {
   try {
-    // 檢查數據庫連接
-    await pool.query('SELECT 1');
-    res.status(200).json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      service: 'exchange-backend',
-      database: 'connected'
-    });
+    if (useMemoryStore) {
+      // 記憶體模式 - 不需要數據庫檢查
+      res.status(200).json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        service: 'exchange-backend',
+        database: 'memory-store',
+        mode: 'memory'
+      });
+    } else {
+      // 數據庫模式 - 檢查數據庫連接
+      await pool.query('SELECT 1');
+      res.status(200).json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        service: 'exchange-backend',
+        database: 'connected',
+        mode: 'database'
+      });
+    }
   } catch (error) {
     res.status(503).json({
       status: 'error',
@@ -36,25 +71,6 @@ app.get('/health', async (req, res) => {
     });
   }
 });
-
-// JWT 密鑰配置
-const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-change-in-production';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgres://postgres:postgres@postgres:5432/exchange'
-});
-
-// 判斷是否在生產環境且沒有數據庫
-const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER;
-const hasDatabase = process.env.DATABASE_URL;
-const useMemoryStore = isProduction && !hasDatabase;
-
-console.log('🔧 Configuration:');
-console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-console.log(`   Render: ${process.env.RENDER ? 'true' : 'false'}`);
-console.log(`   Database URL: ${hasDatabase ? 'configured' : 'not configured'}`);
-console.log(`   Memory Store: ${useMemoryStore ? 'enabled' : 'disabled'}`);
 
 // 記憶體存儲（當沒有數據庫時使用）
 let memoryStore = {
