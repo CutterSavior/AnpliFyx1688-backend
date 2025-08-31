@@ -40,7 +40,3 @@ services:
         value: wss://anplifyx1688-backend.onrender.com
       - key: VITE_PROXY_WEBSOCKET2
         value: wss://anplifyx1688-backend.onrender.com
-      # - key: VITE_UPLOAD_ADDRESS2
-      #   value: https://api.github.com/repos/<owner>/<repo>/contents/
-      # - key: VITE_UPLOAD_TOKEN2
-      #   sync: false
