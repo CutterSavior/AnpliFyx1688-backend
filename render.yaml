@@ -1,7 +1,7 @@
 services:
   - type: web
     name: backend
-    rootDir: GAME_01/backend
+    rootDir: .
     env: node
     buildCommand: npm ci
     startCommand: node index.js
@@ -40,3 +40,4 @@ services:
         value: wss://anplifyx1688-backend.onrender.com
       - key: VITE_PROXY_WEBSOCKET2
         value: wss://anplifyx1688-backend.onrender.com
+
