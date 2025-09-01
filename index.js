@@ -13,14 +13,26 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: [
+      // 开发环境
       'http://localhost:8087',  // G平台开发环境
       'http://localhost:9528',  // A平台开发环境
-      'https://amplifyx1688.pages.dev',  // G平台生产环境
-      'https://admin-amplifyx1688.pages.dev',  // A平台生产环境
+      
+      // G平台生产域名
+      'https://amplifyx1688.pages.dev',  // G平台预期生产环境
+      'https://game.andy123.net',  // G平台实际生产域名
+      'https://andy123.net',  // G平台根域名
+      
+      // A平台生产域名
+      'https://admin-amplifyx1688.pages.dev',  // A平台预期生产环境
+      'https://tw-amplfyx.online',  // A平台实际域名
+      
+      // 通配符域名支持
       /\.pages\.dev$/,  // Cloudflare Pages域名
       /\.onrender\.com$/,  // Render.com域名
       /\.vercel\.app$/,  // Vercel域名
-      /\.netlify\.app$/  // Netlify域名
+      /\.netlify\.app$/,  // Netlify域名
+      /\.online$/,  // .online域名
+      /\.net$/  // .net域名
     ],
     credentials: false,  // 关闭credentials，避免CORS问题
     methods: ['GET', 'POST']
@@ -32,14 +44,26 @@ const io = new Server(server, {
 // 更详细的CORS配置，支持G平台和A平台
 app.use(cors({
   origin: [
+    // 开发环境
     'http://localhost:8087',  // G平台开发环境
     'http://localhost:9528',  // A平台开发环境
-    'https://amplifyx1688.pages.dev',  // G平台生产环境
-    'https://admin-amplifyx1688.pages.dev',  // A平台生产环境
+    
+    // G平台生产域名
+    'https://amplifyx1688.pages.dev',  // G平台预期生产环境
+    'https://game.andy123.net',  // G平台实际生产域名
+    'https://andy123.net',  // G平台根域名
+    
+    // A平台生产域名
+    'https://admin-amplifyx1688.pages.dev',  // A平台预期生产环境
+    'https://tw-amplfyx.online',  // A平台实际域名
+    
+    // 通配符域名支持
     /\.pages\.dev$/,  // Cloudflare Pages域名
     /\.onrender\.com$/,  // Render.com域名
     /\.vercel\.app$/,  // Vercel域名
-    /\.netlify\.app$/  // Netlify域名
+    /\.netlify\.app$/,  // Netlify域名
+    /\.online$/,  // .online域名
+    /\.net$/  // .net域名
   ],
   credentials: false,  // 关闭credentials，避免CORS问题
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
