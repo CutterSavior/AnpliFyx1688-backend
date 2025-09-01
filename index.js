@@ -55,7 +55,7 @@ app.use(cors({
     
     // A平台生产域名
     'https://admin-amplifyx1688.pages.dev',  // A平台预期生产环境
-    'https://tw-amplfyx.online',  // A平台实际域名
+    'https://tw-amplifyx.online',  // A平台实际域名
     
     // 通配符域名支持
     /\.pages\.dev$/,  // Cloudflare Pages域名
@@ -675,6 +675,149 @@ app.post('/anon/v1/comm/token', (req, res) => {
     code: 200,
     message: '获取成功',
     data: token
+  });
+});
+
+// G平台缺失的API端点
+app.post('/anon/v1/notice/list', (req, res) => {
+  res.json({
+    code: 200,
+    data: []
+  });
+});
+
+app.post('/anon/v1/wallet/currency', (req, res) => {
+  res.json({ 
+    code: 200, 
+    data: [
+      { id: 1, symbol: 'USDT', name: 'Tether USD' },
+      { id: 2, symbol: 'BTC', name: 'Bitcoin' },
+      { id: 3, symbol: 'ETH', name: 'Ethereum' }
+    ]
+  });
+});
+
+app.post('/anon/v1/support/list', (req, res) => {
+  res.json({
+    code: 200,
+    data: []
+  });
+});
+
+app.post('/anon/v1/market/stock/recommend', (req, res) => {
+  const symbols = ['BTC/USDT','ETH/USDT','BNB/USDT','SOL/USDT','XRP/USDT','DOGE/USDT'];
+  const data = symbols.map(s => {
+    const base = 500 + Math.random() * 50000;
+    const changePct = (Math.random() - 0.5) * 0.08;
+    const price = Math.max(0.0001, base * (1 + changePct));
+    return { symbol: s, price: price.toFixed(4), change24h: (changePct * 100).toFixed(2) + '%' };
+  });
+  res.json({ code: 200, data });
+});
+
+app.post('/anon/v22/contract/item', (req, res) => {
+  res.json({ 
+    code: 200, 
+    data: []
+  });
+});
+
+app.get('/anon/v1/ticker/realtime', (req, res) => {
+  const { symbol = 'BTC/USDT' } = req.query || {};
+  const base = 50000 + (Math.random() - 0.5) * 200;
+  const changePct = (Math.random() - 0.5) * 0.06;
+  const price = Math.max(0.0001, base * (1 + changePct));
+  res.json({ 
+    code: 200, 
+    data: { 
+      symbol, 
+      price: price.toFixed(2), 
+      change24h: (changePct * 100).toFixed(2) + '%',
+      volume: (Math.random() * 1000000).toFixed(2)
+    }
+  });
+});
+
+// 支持不同symbol的实时行情 - 修复路径格式
+app.get('/anon/v1/ticker/realtime2symbol=*', (req, res) => {
+  const url = req.originalUrl;
+  const symbolMatch = url.match(/symbol=([^&?]+)/);
+  const symbol = symbolMatch ? symbolMatch[1] : 'BTCUSDT';
+  
+  // 根据不同symbol返回不同的基础价格
+  const symbolPrices = {
+    'BTCUSDT': 50000,
+    'ETHUSDT': 2500,
+    'BNBUSDT': 300,
+    'SOLUSDT': 100,
+    'XRPUSDT': 0.6,
+    'DOGEUSDT': 0.08
+  };
+  
+  const base = symbolPrices[symbol] || 1000;
+  const changePct = (Math.random() - 0.5) * 0.08;
+  const price = Math.max(0.0001, base * (1 + changePct));
+  
+  res.json({ 
+    code: 200, 
+    data: { 
+      symbol, 
+      price: price.toFixed(symbol.includes('USDT') && price < 1 ? 6 : 2), 
+      change24h: (changePct * 100).toFixed(2) + '%',
+      volume: (Math.random() * 1000000).toFixed(2)
+    }
+  });
+});
+
+// 钱包货币列表 - 修复重复问题
+app.get('/anon/v1/wallet/currency', (req, res) => {
+  res.json({ 
+    code: 200, 
+    data: [
+      { id: 1, symbol: 'USDT', name: 'Tether USD', icon: 'usdt.svg' },
+      { id: 2, symbol: 'BTC', name: 'Bitcoin', icon: 'btc.svg' },
+      { id: 3, symbol: 'ETH', name: 'Ethereum', icon: 'eth.svg' },
+      { id: 4, symbol: 'BNB', name: 'Binance Coin', icon: 'bnb.svg' },
+      { id: 5, symbol: 'SOL', name: 'Solana', icon: 'sol.svg' }
+    ]
+  });
+});
+
+// 通用ticker路由处理所有symbol请求
+app.get('/anon/v1/ticker/*', (req, res) => {
+  const url = req.originalUrl;
+  let symbol = 'BTCUSDT';
+  
+  // 从URL中提取symbol
+  if (url.includes('symbol=')) {
+    const symbolMatch = url.match(/symbol=([^&?]+)/);
+    symbol = symbolMatch ? symbolMatch[1] : 'BTCUSDT';
+  }
+  
+  // 根据不同symbol返回不同的基础价格
+  const symbolPrices = {
+    'BTCUSDT': 50000, 'BTC%2FUSDT': 50000,
+    'ETHUSDT': 2500, 'ETH%2FUSDT': 2500,
+    'BNBUSDT': 300, 'BNB%2FUSDT': 300,
+    'SOLUSDT': 100, 'SOL%2FUSDT': 100,
+    'XRPUSDT': 0.6, 'XRP%2FUSDT': 0.6,
+    'DOGEUSDT': 0.08, 'DOGE%2FUSDT': 0.08
+  };
+  
+  const base = symbolPrices[symbol] || 1000;
+  const changePct = (Math.random() - 0.5) * 0.08;
+  const price = Math.max(0.0001, base * (1 + changePct));
+  
+  res.json({ 
+    code: 200, 
+    data: { 
+      symbol: symbol.replace('%2F', '/'), 
+      price: price.toFixed(symbol.includes('USDT') && price < 1 ? 6 : 2), 
+      change24h: (changePct * 100).toFixed(2) + '%',
+      volume: (Math.random() * 1000000).toFixed(2),
+      high24h: (price * 1.05).toFixed(2),
+      low24h: (price * 0.95).toFixed(2)
+    }
   });
 });
 
