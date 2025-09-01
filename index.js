@@ -11,11 +11,42 @@ const bcrypt = require('bcryptjs');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*'},
-  path: '/socket.io'
+  cors: {
+    origin: [
+      'http://localhost:8087',  // G平台开发环境
+      'http://localhost:9528',  // A平台开发环境
+      'https://amplifyx1688.pages.dev',  // G平台生产环境
+      'https://admin-amplifyx1688.pages.dev',  // A平台生产环境
+      /\.pages\.dev$/,  // Cloudflare Pages域名
+      /\.onrender\.com$/,  // Render.com域名
+      /\.vercel\.app$/,  // Vercel域名
+      /\.netlify\.app$/  // Netlify域名
+    ],
+    credentials: false,  // 关闭credentials，避免CORS问题
+    methods: ['GET', 'POST']
+  },
+  path: '/socket.io',
+  transports: ['websocket', 'polling']
 });
 
-app.use(cors());
+// 更详细的CORS配置，支持G平台和A平台
+app.use(cors({
+  origin: [
+    'http://localhost:8087',  // G平台开发环境
+    'http://localhost:9528',  // A平台开发环境
+    'https://amplifyx1688.pages.dev',  // G平台生产环境
+    'https://admin-amplifyx1688.pages.dev',  // A平台生产环境
+    /\.pages\.dev$/,  // Cloudflare Pages域名
+    /\.onrender\.com$/,  // Render.com域名
+    /\.vercel\.app$/,  // Vercel域名
+    /\.netlify\.app$/  // Netlify域名
+  ],
+  credentials: false,  // 关闭credentials，避免CORS问题
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'auth', 'lang', 'X-Requested-With'],
+  exposedHeaders: ['Content-Length', 'X-Foo', 'X-Bar']
+}));
+
 app.use(bodyParser.json());
 
 // JWT 密鑰配置
