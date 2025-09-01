@@ -73,6 +73,8 @@ app.use(cors({
 
 app.use(bodyParser.json());
 
+
+
 // JWT 密鑰配置
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-change-in-production';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
@@ -3920,4 +3922,19 @@ adminNamespace.on('connection', (socket) => {
     console.log('Admin main client disconnected:', socket.id);
     clearInterval(interval);
   });
+});
+
+// 通用404处理中间件 - 放在所有路由定义之后
+app.use('*', (req, res) => {
+  // 对API路径返回JSON格式的404响应
+  if (req.originalUrl.startsWith('/anon') || req.originalUrl.startsWith('/authc') || req.originalUrl.startsWith('/api')) {
+    return res.status(200).json({
+      code: 404,
+      message: 'API端点不存在',
+      path: req.originalUrl,
+      method: req.method
+    });
+  }
+  // 对其他路径返回HTML 404
+  res.status(404).send('Page Not Found');
 });
