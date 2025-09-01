@@ -55,7 +55,7 @@ app.use(cors({
     
     // A平台生产域名
     'https://admin-amplifyx1688.pages.dev',  // A平台预期生产环境
-    'https://tw-amplifyx.online',  // A平台实际域名
+    'https://tw-amplfyx.online',  // A平台实际域名（注意：amplfyx缺少i）
     
     // 通配符域名支持
     /\.pages\.dev$/,  // Cloudflare Pages域名
