@@ -2779,10 +2779,10 @@ app.post('/api/roles/v1/futures/m/sell', authenticateToken, (req, res) => {
 
 // 系統管理相關 API
 app.post('/api/roles/v1/sysrole/list', authenticateToken, (req, res) => {
+  // 與前端期望字段對齊：roleid, rolename, auths, remarks
   res.json([
-    { id: 1, name: '超級管理員', code: 'super_admin', permissions: ['*'], created_at: '2024-01-01' },
-    { id: 2, name: '管理員', code: 'admin', permissions: ['user.view', 'order.view'], created_at: '2024-01-01' },
-    { id: 3, name: '客服', code: 'support', permissions: ['user.view', 'message.send'], created_at: '2024-01-01' }
+    { roleid: 1, rolename: '系統管理員', auths: 'dashboard,users,orders,finance,system', remarks: '擁有全部權限', preset: true },
+    { roleid: 2, rolename: '客服人員', auths: 'dashboard,service,users', remarks: '客服相關權限', preset: true }
   ]);
 });
 
@@ -2794,10 +2794,11 @@ app.post('/api/roles/v1/sysuser/list', authenticateToken, (req, res) => {
 });
 
 app.post('/api/roles/v1/syspara/list', authenticateToken, (req, res) => {
+  // 與前端 ParamsSet 頁面對齊字段：name, value, remark
   res.json([
-    { key: 'site_name', value: 'AmpliFyx 交易平台', description: '網站名稱' },
-    { key: 'maintenance_mode', value: 'false', description: '維護模式' },
-    { key: 'max_trade_amount', value: '1000000', description: '最大交易金額' }
+    { name: 'site_name', value: 'AmpliFyx 交易平台', remark: '網站名稱' },
+    { name: 'maintenance_mode', value: 'false', remark: '維護模式 (true/false)' },
+    { name: 'max_trade_amount', value: '1000000', remark: '最大交易金額' }
   ]);
 });
 
@@ -3330,6 +3331,20 @@ app.all('/api/roles/v1/*', authenticateToken, async (req, res) => {
     ];
     return ok(demoUsers);
   }
+  // 代理列表與新增
+  if (/\/roles\/v1\/agent\/q\/list$/.test(p)) {
+    const list = memoryStore.agents || (memoryStore.agents = []);
+    return ok(list);
+  }
+  if (/\/roles\/v1\/agent\/m\/add$/.test(p)) {
+    const { username, email, phone, remarks } = req.body || {};
+    memoryStore.agents = memoryStore.agents || [];
+    const id = memoryStore.agents.length ? (memoryStore.agents[memoryStore.agents.length-1].id + 1) : 1;
+    const agent = { id, username: username || ('agent'+id), email: email||'', phone: phone||'', remarks: remarks||'', created_at: new Date().toISOString() };
+    memoryStore.agents.push(agent);
+    return okMsg('新增成功');
+  }
+  if (/\/roles\/v1\/agent\/m\/update$/.test(p)) return okMsg('更新成功');
   if (/\/roles\/v1\/support\/user\/search$/.test(p)) {
     const { keyword = '' } = req.body || {};
     if (!useMemoryStore && pool) {
