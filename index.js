@@ -3263,6 +3263,47 @@ app.post('/api/authc/v1/c2c/order/list', authenticateToken, (req, res) => {
   res.json({ code: 200, data: orders });
 });
 
+// 用戶基本資訊（Admin 彈窗）
+app.post('/api/authc/v1/user/basic', authenticateToken, (req, res) => {
+  const { partyid } = req.body || {};
+  if (!partyid) return res.status(400).json({ code: 400, message: 'partyid不能為空' });
+  const demo = {
+    uid: 100001,
+    username: 'demo_user',
+    partyid,
+    role: 'user',
+    kyc: 0,
+    kyc_status: 'none',
+    father_username: 'root',
+    limit: '0',
+    lastlogin: new Date().toISOString().slice(0,19).replace('T',' '),
+    remarks: '演示用戶',
+    wallet: '1000.00',
+    status: 'active',
+    created: '2024-01-01 00:00:00'
+  };
+  return res.json({ code: 200, data: demo });
+});
+
+// 用戶資金資訊（Admin 彈窗）
+app.post('/api/authc/v1/user/funds', authenticateToken, (req, res) => {
+  const { partyid } = req.body || {};
+  if (!partyid) return res.status(400).json({ code: 400, message: 'partyid不能為空' });
+  const data = {
+    wallet: [
+      { currency: 'USDT', amount: 0 },
+      { currency: 'USD', amount: 0 },
+      { currency: 'BTC', amount: 0 },
+      { currency: 'ETH', amount: 0 }
+    ],
+    spot: [
+      { currency: 'USDT', amount: 0 },
+      { currency: 'BTC', amount: 0 }
+    ]
+  };
+  return res.json({ code: 200, data });
+});
+
 // roles（可能被前端誤寫為 rules）— 補齊大宗交易相關端點
 app.post('/api/roles/v1/blocktrade/para', (req, res) => {
   res.json({ code: 200, data: { minAmount: 1, maxLeverage: 5 } });
