@@ -3517,18 +3517,26 @@ app.all('/api/roles/v1/*', authenticateToken, async (req, res) => {
     return ok(data);
   }
   if (/\/roles\/v1\/data\/user\/list$/.test(p)) {
+    const { page = 1, size = 20, query = '', father = '' } = req.body || {};
     if (!useMemoryStore && pool) {
       try {
-        const r = await pool.query('SELECT id, username, email, status, created_at FROM users ORDER BY id DESC LIMIT 200');
-        return ok(r.rows);
+        const r = await pool.query('SELECT id, username, email, status, created_at FROM users ORDER BY id DESC LIMIT $1 OFFSET $2', [size, (page-1)*size]);
+        const rows = r.rows.map((u,i) => ({
+          uid: u.id,
+          username: u.username,
+          partyid: 'UID' + String(u.id).padStart(6,'0'),
+          deposit: '0', withdraw: '0', balance: '0',
+          amount: '0', earn: '0', lastlogin: u.created_at
+        }));
+        return ok(rows);
       } catch (e) {
         console.warn('data/user/list DB error:', e.message);
       }
     }
-    // 返回演示用戶數據 - 所有用戶都設為未上傳資料狀態
+    // demo 資料，補齊 partyid
     const demoUsers = [
-      { id: 1, username: 'demo_user', email: 'demo@example.com', partyid: 'DEMO001', role: 'user', kyc: 0, kyc_status: 'none', uid: '100001', father_username: 'root', limit: '0', lastlogin: '2024-01-15 10:30:00', remarks: '演示用戶', wallet: '1000.00', status: 'active', created_at: '2024-01-01 00:00:00' },
-      { id: 2, username: 'test_user', email: 'test@example.com', partyid: 'TEST001', role: 'user', kyc: 0, kyc_status: 'none', uid: '100002', father_username: 'root', limit: '0', lastlogin: '2024-01-15 11:30:00', remarks: '測試用戶', wallet: '500.00', status: 'active', created_at: '2024-01-01 00:00:00' }
+      { uid: 100001, username: 'demo_user', partyid: 'DEMO001', amount: '0', earn: '0', deposit: '0', withdraw: '0', balance: '0', lastlogin: '2024-01-15 10:30:00' },
+      { uid: 100002, username: 'test_user', partyid: 'TEST001', amount: '0', earn: '0', deposit: '0', withdraw: '0', balance: '0', lastlogin: '2024-01-15 11:30:00' }
     ];
     return ok(demoUsers);
   }
