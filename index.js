@@ -3618,10 +3618,21 @@ app.all('/api/roles/v1/*', authenticateToken, async (req, res) => {
     return ok(u ? { id: u.id, username: u.username, email: u.email, status: u.status } : {});
   }
   if (/\/roles\/v1\/sysrole\/authtree$/.test(p)) {
-    return ok({
-      menus: ['dashboard', 'users', 'orders', 'finance', 'system', 'service', 'market', 'c2c', 'ipo', 'contract', 'crypto', 'blocktrade'],
-      actions: ['view', 'add', 'update', 'delete', 'export']
-    });
+    // 兼容前端期望: 返回陣列 [{id,label,auth}]
+    return ok([
+      { id: 1, label: 'dashboard', auth: true },
+      { id: 2, label: 'users', auth: false },
+      { id: 3, label: 'orders', auth: false },
+      { id: 4, label: 'finance', auth: false },
+      { id: 5, label: 'system', auth: true },
+      { id: 6, label: 'service', auth: false },
+      { id: 7, label: 'market', auth: false },
+      { id: 8, label: 'c2c', auth: false },
+      { id: 9, label: 'ipo', auth: false },
+      { id: 10, label: 'contract', auth: false },
+      { id: 11, label: 'crypto', auth: false },
+      { id: 12, label: 'blocktrade', auth: false }
+    ]);
   }
   if (/\/(q\/)?get$/.test(p) || /\/get$/.test(p) || /\/para$/.test(p) || /\/conf(get)?$/.test(p) || /\/authtree$/.test(p)) return ok({});
   // 其餘變更操作
