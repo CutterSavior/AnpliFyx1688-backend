@@ -1,7 +1,7 @@
 services:
   - type: web
     name: backend
-    rootDir: .
+    rootDir: GAME_01/backend
     env: node
     buildCommand: npm ci
     startCommand: node index.js
@@ -13,7 +13,7 @@ services:
       # - key: DATABASE_URL
       #   sync: false
 
-  - type: static
+  - type: static_site
     name: game
     rootDir: Game_01.v1
     buildCommand: npm ci && npm run build
@@ -21,13 +21,13 @@ services:
     autoDeploy: true
     envVars:
       - key: VITE_API_ORIGIN
-        value: https://anplifyx1688-backend.onrender.com/api
+        value: https://amplifyx1688-backend.onrender.com/api
       - key: VITE_WS_ORIGIN
-        value: wss://anplifyx1688-backend.onrender.com
+        value: wss://amplifyx1688-backend.onrender.com
       - key: VITE_CHAT_WS_ORIGIN
-        value: wss://anplifyx1688-backend.onrender.com
+        value: wss://amplifyx1688-backend.onrender.com
 
-  - type: static
+  - type: static_site
     name: admin
     rootDir: GAME_01/Admin_01.v1
     buildCommand: npm ci && npm run build
@@ -35,9 +35,12 @@ services:
     autoDeploy: true
     envVars:
       - key: VITE_API_BASE
-        value: https://anplifyx1688-backend.onrender.com/api
+        value: https://amplifyx1688-backend.onrender.com/api
       - key: VITE_PROXY_WEBSOCKET
-        value: wss://anplifyx1688-backend.onrender.com
+        value: wss://amplifyx1688-backend.onrender.com
       - key: VITE_PROXY_WEBSOCKET2
-        value: wss://anplifyx1688-backend.onrender.com
-
+        value: wss://amplifyx1688-backend.onrender.com
+      # - key: VITE_UPLOAD_ADDRESS2
+      #   value: https://api.github.com/repos/<owner>/<repo>/contents/
+      # - key: VITE_UPLOAD_TOKEN2
+      #   sync: false
