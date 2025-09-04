@@ -7,6 +7,7 @@ const bodyParser = require('body-parser');
 const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const server = http.createServer(app);
@@ -78,6 +79,11 @@ app.use(bodyParser.json());
 // JWT 密鑰配置
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-change-in-production';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
+const SMTP_HOST = process.env.SMTP_HOST || '';
+const SMTP_PORT = parseInt(process.env.SMTP_PORT || '465', 10);
+const SMTP_USER = process.env.SMTP_USER || '';
+const SMTP_PASS = process.env.SMTP_PASS || '';
+const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@example.com';
 
 // 判斷是否有資料庫，若無則一律使用記憶體模式（本機開發免 DB）
 const hasDatabase = process.env.DATABASE_URL;
@@ -145,6 +151,7 @@ let memoryStore = {
   nextOrderId: 1,
   captchas: {},
   emailCodes: {},
+  emailVerifyTokens: {}, // token -> { email, expires }
   google: {}, // userId -> { secret, bound, created_at }
   // 客服中心（僅記憶體模式使用）
   supportUsers: [], // { id, uid, username, email, created_at }
