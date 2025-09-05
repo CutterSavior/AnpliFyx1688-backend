@@ -10,11 +10,9 @@ RUN apk add --no-cache \
 
 # 複製package文件並安裝依賴
 COPY package*.json ./
-RUN if [ -f package-lock.json ]; then \
-        npm ci --only=production && npm cache clean --force; \
-    else \
-        npm install --only=production && npm cache clean --force; \
-    fi
+# 使用更寬容且穩定的安裝方式，避免 lock 不同步導致 npm ci 失敗
+RUN npm install --omit=dev --no-audit --prefer-offline \
+    && npm cache clean --force
 
 # 複製應用程式碼
 COPY . .

@@ -330,6 +330,485 @@ curl -X POST http://localhost:3000/api/orders \
   -d '{"symbol":"BTCUSDT","side":"buy","price":45000,"amount":0.1}'
 ```
 
+## 🔍 地址餘額查詢功能 API
+
+### 功能概述
+全新的地址餘額查詢系統，支援多種主流區塊鏈網路的錢包地址餘額查詢和統計功能。
+
+### 🌐 支援的區塊鏈網路
+
+| 網路 | 符號 | 地址格式 | 示例 |
+|------|------|----------|------|
+| Bitcoin | BTC | Legacy (1...), P2SH (3...), Bech32 (bc1...) | `1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa` |
+| Ethereum | ETH | 0x + 40 hex chars | `0x742d35Cc6634C0532925a3b8D431d3C86d93c09` |
+| Binance Smart Chain | BSC/BNB | 0x + 40 hex chars | `0x742d35Cc6634C0532925a3b8D431d3C86d93c09` |
+| TRON | TRX | T + 33 chars | `TLyqzVGLV1srkB7dToTAEqgDSfPtXRJZYH` |
+| Litecoin | LTC | Legacy (L/M...), Bech32 (ltc1...) | `LdP8Qox1VAhCzLJNqrr74YovaWYyNBUWvL` |
+| Dogecoin | DOGE | D + 33 chars | `DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L` |
+| XRP | XRP | r + 24-34 chars | `rN7n7otQDd6FczFgLdSqtcsAUxDkw6fzRH` |
+
+### 📋 API 端點
+
+#### 1. 地址格式驗證
+```bash
+POST /api/blockchain/validate-address
+Content-Type: application/json
+
+{
+  "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+  "network": "BTC"
+}
+```
+
+**響應示例:**
+```json
+{
+  "code": 200,
+  "message": "驗證成功",
+  "data": {
+    "isValid": true,
+    "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+    "network": "Bitcoin",
+    "addressType": "Legacy P2PKH",
+    "message": "✅ Bitcoin 地址格式正確"
+  }
+}
+```
+
+**錯誤響應:**
+```json
+{
+  "code": 400,
+  "message": "地址驗證失敗",
+  "data": {
+    "isValid": false,
+    "error": "❌ 無效的 Bitcoin 地址格式"
+  }
+}
+```
+
+#### 2. 單個地址餘額查詢
+```bash
+POST /api/blockchain/query-balance
+Content-Type: application/json
+
+{
+  "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+  "network": "BTC"
+}
+```
+
+**響應示例:**
+```json
+{
+  "code": 200,
+  "message": "查詢成功",
+  "data": {
+    "success": true,
+    "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+    "network": "Bitcoin",
+    "currency": "BTC",
+    "balance": "0.00000000",
+    "unconfirmed": "0.00000000",
+    "total": "0.00000000",
+    "timestamp": "2024-01-15T10:30:00.000Z",
+    "explorer": "https://blockstream.info/address/1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+  }
+}
+```
+
+#### 3. 批量地址餘額查詢
+```bash
+POST /api/blockchain/query-multiple-balances
+Content-Type: application/json
+
+{
+  "addresses": [
+    {
+      "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+      "network": "BTC"
+    },
+    {
+      "address": "0x742d35Cc6634C0532925a3b8D431d3C86d93c09",
+      "network": "ETH"
+    }
+  ]
+}
+```
+
+**響應示例:**
+```json
+{
+  "code": 200,
+  "message": "批量查詢完成",
+  "data": {
+    "results": [
+      {
+        "index": 0,
+        "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+        "network": "BTC",
+        "result": {
+          "success": true,
+          "balance": "0.00000000",
+          "total": "0.00000000",
+          "currency": "BTC"
+        }
+      },
+      {
+        "index": 1,
+        "address": "0x742d35Cc6634C0532925a3b8D431d3C86d93c09",
+        "network": "ETH",
+        "result": {
+          "success": true,
+          "balance": "1.234567",
+          "total": "1.234567",
+          "currency": "ETH"
+        }
+      }
+    ],
+    "successCount": 2,
+    "totalCount": 2,
+    "totalBalance": [
+      {
+        "currency": "BTC",
+        "balance": "0.00000000",
+        "network": "Bitcoin",
+        "symbol": "BTC"
+      },
+      {
+        "currency": "ETH",
+        "balance": "1.234567",
+        "network": "Ethereum",
+        "symbol": "ETH"
+      }
+    ],
+    "timestamp": "2024-01-15T10:30:00.000Z"
+  }
+}
+```
+
+#### 4. 獲取支援的網路列表
+```bash
+GET /api/blockchain/supported-networks
+```
+
+**響應示例:**
+```json
+{
+  "code": 200,
+  "message": "獲取成功",
+  "data": [
+    {
+      "id": "BTC",
+      "name": "Bitcoin",
+      "symbol": "BTC",
+      "decimals": 8,
+      "explorer": "https://blockstream.info/address/"
+    },
+    {
+      "id": "ETH",
+      "name": "Ethereum",
+      "symbol": "ETH",
+      "decimals": 18,
+      "explorer": "https://etherscan.io/address/"
+    }
+  ]
+}
+```
+
+### 🔧 前端整合
+
+#### JavaScript 示例
+```javascript
+// 1. 驗證地址格式
+async function validateAddress(address, network) {
+  try {
+    const response = await axios.post('/api/blockchain/validate-address', {
+      address,
+      network
+    });
+    return response.data.data;
+  } catch (error) {
+    console.error('地址驗證失敗:', error);
+    return { isValid: false, error: error.message };
+  }
+}
+
+// 2. 查詢單個地址餘額
+async function queryBalance(address, network) {
+  try {
+    const response = await axios.post('/api/blockchain/query-balance', {
+      address,
+      network
+    });
+    return response.data.data;
+  } catch (error) {
+    console.error('餘額查詢失敗:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// 3. 批量查詢餘額
+async function queryMultipleBalances(addresses) {
+  try {
+    const response = await axios.post('/api/blockchain/query-multiple-balances', {
+      addresses
+    });
+    return response.data.data;
+  } catch (error) {
+    console.error('批量查詢失敗:', error);
+    throw error;
+  }
+}
+
+// 4. 使用示例
+async function example() {
+  // 驗證地址
+  const validation = await validateAddress(
+    '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', 
+    'BTC'
+  );
+  
+  if (validation.isValid) {
+    // 查詢餘額
+    const balance = await queryBalance(
+      '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
+      'BTC'
+    );
+    console.log('餘額:', balance.total, balance.currency);
+  }
+}
+```
+
+#### Vue 3 組件使用
+```vue
+<template>
+  <div class="address-checker">
+    <input 
+      v-model="address" 
+      placeholder="輸入錢包地址"
+      @blur="validateAddress"
+    />
+    <select v-model="network">
+      <option value="BTC">Bitcoin</option>
+      <option value="ETH">Ethereum</option>
+      <!-- 更多網路選項 -->
+    </select>
+    
+    <button @click="queryBalance" :disabled="!isValid">
+      查詢餘額
+    </button>
+    
+    <div v-if="result">
+      餘額: {{ result.total }} {{ result.currency }}
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref } from 'vue';
+import { validateWalletAddress, queryAddressBalance } from '@/api/blockchainApi';
+
+const address = ref('');
+const network = ref('BTC');
+const isValid = ref(false);
+const result = ref(null);
+
+const validateAddress = async () => {
+  if (!address.value || !network.value) return;
+  
+  const validation = await validateWalletAddress(address.value, network.value);
+  isValid.value = validation.isValid;
+};
+
+const queryBalance = async () => {
+  if (!isValid.value) return;
+  
+  result.value = await queryAddressBalance(address.value, network.value);
+};
+</script>
+```
+
+### 🧪 測試用例
+
+#### 1. 地址驗證測試
+```bash
+# Bitcoin 地址驗證
+curl -X POST http://localhost:3000/api/blockchain/validate-address \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+    "network": "BTC"
+  }'
+
+# Ethereum 地址驗證
+curl -X POST http://localhost:3000/api/blockchain/validate-address \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "0x742d35Cc6634C0532925a3b8D431d3C86d93c09",
+    "network": "ETH"
+  }'
+
+# 無效地址測試
+curl -X POST http://localhost:3000/api/blockchain/validate-address \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "invalid_address",
+    "network": "BTC"
+  }'
+```
+
+#### 2. 餘額查詢測試
+```bash
+# 查詢 Bitcoin 地址餘額
+curl -X POST http://localhost:3000/api/blockchain/query-balance \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+    "network": "BTC"
+  }'
+
+# 查詢 Ethereum 地址餘額
+curl -X POST http://localhost:3000/api/blockchain/query-balance \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "0x742d35Cc6634C0532925a3b8D431d3C86d93c09",
+    "network": "ETH"
+  }'
+```
+
+#### 3. 批量查詢測試
+```bash
+curl -X POST http://localhost:3000/api/blockchain/query-multiple-balances \
+  -H "Content-Type: application/json" \
+  -d '{
+    "addresses": [
+      {
+        "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+        "network": "BTC"
+      },
+      {
+        "address": "0x742d35Cc6634C0532925a3b8D431d3C86d93c09",
+        "network": "ETH"
+      },
+      {
+        "address": "TLyqzVGLV1srkB7dToTAEqgDSfPtXRJZYH",
+        "network": "TRX"
+      }
+    ]
+  }'
+```
+
+### ⚠️ 錯誤處理
+
+#### 常見錯誤代碼
+
+| 錯誤代碼 | HTTP狀態 | 說明 |
+|---------|----------|------|
+| `INVALID_ADDRESS_FORMAT` | 400 | 地址格式錯誤 |
+| `UNSUPPORTED_NETWORK` | 400 | 不支援的網路 |
+| `QUERY_TIMEOUT` | 408 | 查詢超時 |
+| `API_RATE_LIMIT` | 429 | API 請求頻率限制 |
+| `BLOCKCHAIN_API_ERROR` | 502 | 區塊鏈 API 錯誤 |
+| `NETWORK_UNAVAILABLE` | 503 | 網路服務不可用 |
+
+#### 錯誤響應格式
+```json
+{
+  "code": 400,
+  "message": "地址格式錯誤",
+  "error": "INVALID_ADDRESS_FORMAT",
+  "data": {
+    "address": "invalid_address",
+    "network": "BTC",
+    "details": "❌ 無效的 Bitcoin 地址格式"
+  },
+  "timestamp": "2024-01-15T10:30:00.000Z"
+}
+```
+
+### 🔒 安全考量
+
+#### 1. 隱私保護
+- 所有查詢都通過公開的區塊鏈 API
+- 不保存用戶的私鑰或敏感資訊
+- 僅查詢公開的地址餘額信息
+
+#### 2. 請求限制
+- 實施合理的請求頻率限制
+- 批量查詢最多支援 20 個地址
+- 設置查詢超時時間（10秒）
+
+#### 3. 數據驗證
+- 嚴格的地址格式驗證
+- 網路參數驗證
+- 輸入數據清理和過濾
+
+### 📊 性能優化
+
+#### 1. 並行查詢
+- 批量查詢使用 Promise.all 並行處理
+- 減少總查詢時間
+
+#### 2. 重試機制
+- 自動重試失敗的請求（最多3次）
+- 指數退避算法
+
+#### 3. 緩存策略
+- 可選的查詢結果緩存（5分鐘）
+- 減少對外部 API 的依賴
+
+### 🎯 使用場景
+
+#### 1. 錢包餘額監控
+```javascript
+// 定期檢查多個錢包餘額
+const wallets = [
+  { address: '1A1zP...', network: 'BTC' },
+  { address: '0x742d...', network: 'ETH' }
+];
+
+setInterval(async () => {
+  const results = await queryMultipleBalances(wallets);
+  console.log('總餘額:', results.totalBalance);
+}, 300000); // 每5分鐘檢查一次
+```
+
+#### 2. 交易前餘額驗證
+```javascript
+// 在執行交易前驗證餘額
+async function verifyBalance(address, network, requiredAmount) {
+  const balance = await queryBalance(address, network);
+  
+  if (balance.success && parseFloat(balance.total) >= requiredAmount) {
+    return { valid: true, balance: balance.total };
+  }
+  
+  return { 
+    valid: false, 
+    error: '餘額不足',
+    currentBalance: balance.total,
+    required: requiredAmount
+  };
+}
+```
+
+#### 3. 投資組合追蹤
+```javascript
+// 追蹤多幣種投資組合
+async function trackPortfolio(portfolioAddresses) {
+  const results = await queryMultipleBalances(portfolioAddresses);
+  
+  const portfolio = results.totalBalance.map(item => ({
+    currency: item.currency,
+    amount: parseFloat(item.balance),
+    network: item.network
+  }));
+  
+  return portfolio;
+}
+```
+
 ---
 
-這個認證系統確保了所有修改型操作都需要有效的JWT認證，同時提供了完整的權限控制和審計功能。
+這個地址餘額查詢系統提供了完整的區塊鏈地址驗證和餘額查詢功能，支援多種主流區塊鏈網路，具備完善的錯誤處理和安全機制。

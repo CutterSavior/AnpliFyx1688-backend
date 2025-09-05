@@ -1752,6 +1752,46 @@ app.post('/api/anon/v1/comm/token', (req, res) => {
   });
 });
 
+// ===== 匿名 GET 端點（與 POST 共存）=====
+// Session Token（GET）
+app.get('/api/anon/v1/comm/token', (req, res) => {
+  res.json({
+    code: 200,
+    data: 'mock-session-token'
+  });
+});
+
+// 公告列表（GET）
+app.get('/api/anon/v1/notice/list', (req, res) => {
+  res.json({ code: 200, data: [] });
+});
+
+// 客服支援列表（GET）
+app.get('/api/anon/v1/support/list', (req, res) => {
+  res.json({ code: 200, data: [] });
+});
+
+// 錢包幣別（GET）
+app.get('/api/anon/v1/wallet/currency', (req, res) => {
+  res.json({ code: 200, data: [
+    { id: 1, symbol: 'USDT', name: 'Tether USD', icon: 'usdt.svg' },
+    { id: 2, symbol: 'BTC', name: 'Bitcoin', icon: 'btc.svg' },
+    { id: 3, symbol: 'ETH', name: 'Ethereum', icon: 'eth.svg' }
+  ]});
+});
+
+// 股票推薦（GET）— 回傳 { index: [...] }
+app.get('/api/anon/v1/market/stock/recommend', (req, res) => {
+  const symbols = ['BTC/USDT','ETH/USDT','BNB/USDT','SOL/USDT','XRP/USDT','DOGE/USDT'];
+  const index = symbols.map(s => {
+    const base = 500 + Math.random() * 50000;
+    const changePct = (Math.random() - 0.5) * 0.08;
+    const price = Math.max(0.0001, base * (1 + changePct));
+    return { symbol: s, price: price.toFixed(4), change24h: (changePct * 100).toFixed(2) + '%' };
+  });
+  res.json({ code: 200, data: { index } });
+});
+
 // 圖形驗證碼（SVG 格式）- 支持G平台路径
 app.get('/anon/v1/comm/verifcode', (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
