@@ -10,6 +10,8 @@ const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 
 const app = express();
+// Gzip/Deflate/Brotli 中介層 (需 Node >= v18 才支援自動br negotiation)
+const compression = require('compression');
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -73,6 +75,60 @@ app.use(cors({
 }));
 
 app.use(bodyParser.json());
+// 啟用壓縮（針對文字資源：js/css/json/svg/html）
+app.use(compression({
+  level: 6,
+  threshold: 1024,
+  filter: (req, res) => {
+    if (req.headers['x-no-compress']) return false;
+    return compression.filter(req, res);
+  }
+}));
+
+// ==== 靜態應用掛載 (/app/*) ====
+const path = require('path');
+const staticBase = path.join(__dirname, 'static-app');
+app.use('/app/GAME', express.static(path.join(staticBase, 'GAME'), { index: 'index.html', maxAge: '1h' }));
+app.use('/app/windowsAPP', express.static(path.join(staticBase, 'windowsAPP'), { index: 'index.html', maxAge: '1h' }));
+app.use('/app/iso', express.static(path.join(staticBase, 'iso'), { index: 'index.html', maxAge: '1h' }));
+app.use('/app/AI-boT', express.static(path.join(staticBase, 'AI-boT'), { index: 'index.html', maxAge: '1h' }));
+
+// /app/iso 自動判斷裝置跳轉：行動(iOS/Android) -> 提示頁，桌面 -> Windows 安裝檔位置
+app.get('/app/iso/device', (req, res) => {
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  const isAndroid = /android/.test(ua);
+  const isIOS = /iphone|ipad|ipod/.test(ua);
+  if (isAndroid) {
+    return res.redirect(302, '/app/download#android');
+  }
+  if (isIOS) {
+    return res.redirect(302, '/app/download#ios');
+  }
+  // 其他 (桌面) 導向 windows 區
+  return res.redirect(302, '/app/windowsAPP');
+});
+
+// 直接訪問 /app/iso 若需要強制跳轉，可選擇改為 302 -> /app/iso/device
+// 若想保留原靜態頁則不改。這裡示範：若 query 帶 redirect=1 才跳。
+app.get('/app/iso', (req, res, next) => {
+  if (req.query.redirect === '1') {
+    return res.redirect(302, '/app/iso/device');
+  }
+  next();
+});
+
+// /app/download 聚合頁（簡易 placeholder，可改為模板渲染）
+app.get('/app/download', (req, res) => {
+  const html = `<!doctype html><html><head><meta charset='utf-8'/><title>Download Center</title><meta name='viewport' content='width=device-width,initial-scale=1'/><style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif;background:#0f1115;color:#e5e7eb;margin:0;padding:32px;}h1{margin-top:0;font-size:28px;}section{margin-bottom:32px;}a.btn{display:inline-block;padding:10px 18px;border-radius:8px;background:#2563eb;color:#fff;text-decoration:none;margin:6px 8px 0 0;font-size:14px;}a.btn.secondary{background:#374151;}code{background:#1f2937;padding:2px 6px;border-radius:4px;font-size:13px;}footer{margin-top:40px;font-size:12px;color:#6b7280;} .grid{display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));} .card{background:#1e2530;padding:16px;border:1px solid #2c3440;border-radius:12px;} .card h2{margin:0 0 8px;font-size:18px;} .tag{background:#374151;color:#9ca3af;padding:2px 8px;border-radius:999px;font-size:11px;margin-right:4px;}</style></head><body><h1>下載中心 Download Center</h1><p>依據您的裝置選擇適合的版本。行動裝置可掃描 QR 或使用對應商店；桌面使用 Windows 安裝包。</p><section class='grid'>
+  <div class='card'><h2>Windows 桌面版</h2><p>提供完整體驗，含自動更新（若已整合）。</p><a class='btn' href='/app/windowsAPP'>進入下載頁</a><div><span class='tag'>EXE</span><span class='tag'>MSI</span></div></div>
+  <div class='card'><h2>iOS / Android</h2><p>目前透過行動識別導向對應渠道。</p><a class='btn' href='/app/iso/device'>自動判斷裝置</a><a class='btn secondary' href='/app/iso'>純靜態頁</a></div>
+  <div class='card'><h2>AI Bot</h2><p>策略 / 自動化工具下載與說明。</p><a class='btn' href='/app/AI-boT'>進入</a></div>
+  <div class='card'><h2>GAME 客戶端</h2><p>遊戲入口 / Web 版本 / 安裝包。</p><a class='btn' href='/app/GAME'>進入</a></div>
+</section><footer>© ${new Date().getFullYear()} AmpliFyx Download Hub</footer></body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+});
+
 
 
 
@@ -150,13 +206,17 @@ let memoryStore = {
   nextAdminUserId: 1,
   nextOrderId: 1,
   captchas: {},
+  captchasByToken: {},
   emailCodes: {},
   emailVerifyTokens: {}, // token -> { email, expires }
   google: {}, // userId -> { secret, bound, created_at }
   // 客服中心（僅記憶體模式使用）
   supportUsers: [], // { id, uid, username, email, created_at }
   supportMessages: [], // { id, uid, from, to, content, created_at, read }
-  supportBlacklist: [] // [uid]
+  supportBlacklist: [], // [uid]
+  // 作品集（私人空間）
+  portfolioProjects: [], // { id, user_id, title, summary, content, cover_image, tags:[...], tech_stack:[...], github_url, demo_url, status, published, sort_order, created_at, updated_at }
+  nextProjectId: 1
 };
 
 const CAPTCHA_EXPIRY_MS = 5 * 60 * 1000;
@@ -324,6 +384,28 @@ async function initDb() {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS symbol VARCHAR(20) DEFAULT 'BTCUSDT';
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS type VARCHAR(10) DEFAULT 'limit';
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now();
+
+    -- 個人作品集（私人空間）
+    CREATE TABLE IF NOT EXISTS portfolio_projects (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      summary TEXT DEFAULT '',
+      content TEXT DEFAULT '',
+      cover_image TEXT DEFAULT '',
+      tags TEXT[] DEFAULT ARRAY[]::TEXT[],
+      tech_stack TEXT[] DEFAULT ARRAY[]::TEXT[],
+      github_url TEXT DEFAULT '',
+      demo_url TEXT DEFAULT '',
+      status VARCHAR(20) DEFAULT 'draft', -- draft/published/archived
+      published BOOLEAN DEFAULT false,
+      sort_order INTEGER DEFAULT 0,
+      metadata JSONB DEFAULT '{}',
+      created_at TIMESTAMP DEFAULT now(),
+      updated_at TIMESTAMP DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_portfolio_projects_user ON portfolio_projects(user_id);
+    CREATE INDEX IF NOT EXISTS idx_portfolio_projects_status ON portfolio_projects(status);
   `);
 }
 
@@ -539,13 +621,17 @@ app.post('/anon/v1/user/register', async (req, res) => {
 
   // 验证图形验证码
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-  const rec = memoryStore.captchas[ip];
+  const rec = token ? memoryStore.captchasByToken[token] : memoryStore.captchas[ip];
   if (!verifcode || !rec || Date.now() > rec.expires || String(verifcode).toUpperCase() !== rec.code) {
     return res.status(200).json({ code: 1001, message: '请输入验证码' });
   }
 
   // 验证码正确后立即清除
-  delete memoryStore.captchas[ip];
+  if (token) {
+    delete memoryStore.captchasByToken[token];
+  } else {
+    delete memoryStore.captchas[ip];
+  }
 
   if (!username || !email || !password) {
     return res.status(200).json({ code: 400, message: '用户名、邮箱和密码为必填项目' });
@@ -1094,17 +1180,21 @@ app.post('/api/authc/v1/security/matcher', authenticateToken, (req, res) => {
 
 // G平台用户登录 - 无/api前缀
 app.post('/anon/v1/user/login', async (req, res) => {
-  const { username, password, verifcode } = req.body || {};
+  const { username, password, verifcode, token } = req.body || {};
 
   // 验证图形验证码
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-  const rec = memoryStore.captchas[ip];
+  const rec = token ? memoryStore.captchasByToken[token] : memoryStore.captchas[ip];
   if (!verifcode || !rec || Date.now() > rec.expires || String(verifcode).toUpperCase() !== rec.code) {
     return res.status(200).json({ code: 1001, message: '请输入验证码' });
   }
   
   // 验证码正确后立即清除
-  delete memoryStore.captchas[ip];
+  if (token) {
+    delete memoryStore.captchasByToken[token];
+  } else {
+    delete memoryStore.captchas[ip];
+  }
 
   if (!username || !password) {
     return res.status(200).json({ code: 400, message: '用户名和密码为必填项目' });
@@ -1489,6 +1579,138 @@ app.post('/api/orders', requireAuth, async (req, res) => {
   }
 });
 
+// ========= 個人作品集（私人空間）API =========
+// 建立 / 更新 作品
+app.post('/api/portfolio/project/save', authenticateToken, async (req, res) => {
+  const {
+    id, title, summary = '', content = '', cover_image = '', tags = [], tech_stack = [], github_url = '', demo_url = '', status = 'draft', sort_order = 0
+  } = req.body || {};
+
+  if (!title || typeof title !== 'string') {
+    return res.status(400).json({ code: 400, message: 'title 必填' });
+  }
+
+  try {
+    if (useMemoryStore) {
+      if (id) {
+        const proj = memoryStore.portfolioProjects.find(p => p.id === id && p.user_id === req.user.userId);
+        if (!proj) return res.status(404).json({ code: 404, message: '找不到作品或無權限' });
+        Object.assign(proj, { title, summary, content, cover_image, tags, tech_stack, github_url, demo_url, status, sort_order, updated_at: new Date() });
+        return res.json({ code: 200, message: '更新成功', data: proj });
+      }
+      const newProj = { id: memoryStore.nextProjectId++, user_id: req.user.userId, title, summary, content, cover_image, tags, tech_stack, github_url, demo_url, status, published: status === 'published', sort_order, created_at: new Date(), updated_at: new Date() };
+      memoryStore.portfolioProjects.push(newProj);
+      return res.json({ code: 200, message: '建立成功', data: newProj });
+    } else {
+      if (id) {
+        const r = await pool.query('UPDATE portfolio_projects SET title=$1, summary=$2, content=$3, cover_image=$4, tags=$5, tech_stack=$6, github_url=$7, demo_url=$8, status=$9, published=$10, sort_order=$11, updated_at=now() WHERE id=$12 AND user_id=$13 RETURNING *', [title, summary, content, cover_image, tags, tech_stack, github_url, demo_url, status, status === 'published', sort_order, id, req.user.userId]);
+        if (!r.rows.length) return res.status(404).json({ code: 404, message: '找不到作品或無權限' });
+        return res.json({ code: 200, message: '更新成功', data: r.rows[0] });
+      }
+      const r = await pool.query('INSERT INTO portfolio_projects (user_id, title, summary, content, cover_image, tags, tech_stack, github_url, demo_url, status, published, sort_order) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *', [req.user.userId, title, summary, content, cover_image, tags, tech_stack, github_url, demo_url, status, status === 'published', sort_order]);
+      return res.json({ code: 200, message: '建立成功', data: r.rows[0] });
+    }
+  } catch (err) {
+    return res.status(500).json({ code: 500, message: '保存失敗', error: err.message });
+  }
+});
+
+// 列出自己的作品（含草稿）
+app.get('/api/portfolio/project/mine', authenticateToken, async (req, res) => {
+  try {
+    if (useMemoryStore) {
+      const list = memoryStore.portfolioProjects.filter(p => p.user_id === req.user.userId).sort((a,b)=> b.updated_at - a.updated_at);
+      return res.json({ code: 200, data: list });
+    }
+    const r = await pool.query('SELECT * FROM portfolio_projects WHERE user_id=$1 ORDER BY updated_at DESC', [req.user.userId]);
+    return res.json({ code: 200, data: r.rows });
+  } catch (err) {
+    return res.status(500).json({ code: 500, message: '查詢失敗', error: err.message });
+  }
+});
+
+// 刪除作品
+app.delete('/api/portfolio/project/:id', authenticateToken, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ code: 400, message: 'id 無效' });
+  try {
+    if (useMemoryStore) {
+      const idx = memoryStore.portfolioProjects.findIndex(p => p.id === id && p.user_id === req.user.userId);
+      if (idx === -1) return res.status(404).json({ code: 404, message: '找不到作品或無權限' });
+      memoryStore.portfolioProjects.splice(idx,1);
+      return res.json({ code: 200, message: '刪除成功' });
+    }
+    const r = await pool.query('DELETE FROM portfolio_projects WHERE id=$1 AND user_id=$2 RETURNING id', [id, req.user.userId]);
+    if (!r.rows.length) return res.status(404).json({ code: 404, message: '找不到作品或無權限' });
+    return res.json({ code: 200, message: '刪除成功' });
+  } catch (err) {
+    return res.status(500).json({ code: 500, message: '刪除失敗', error: err.message });
+  }
+});
+
+// 公開列表（僅 published）
+app.get('/api/portfolio/project/public', async (req, res) => {
+  const { user, tag, q } = req.query || {};
+  try {
+    if (useMemoryStore) {
+      let list = memoryStore.portfolioProjects.filter(p => p.published);
+      if (user) list = list.filter(p => String(p.user_id) === String(user));
+      if (tag) list = list.filter(p => (p.tags||[]).includes(tag));
+      if (q) list = list.filter(p => p.title.includes(q) || p.summary.includes(q));
+      list.sort((a,b)=> a.sort_order - b.sort_order || b.updated_at - a.updated_at);
+      return res.json({ code: 200, data: list });
+    }
+    const params = [];
+    const conds = ['published = true'];
+    if (user) { params.push(user); conds.push(`user_id = $${params.length}`); }
+    if (tag) { params.push(tag); conds.push(`$${params.length} = ANY(tags)`); }
+    let sql = `SELECT * FROM portfolio_projects WHERE ${conds.join(' AND ')}`;
+    if (q) { params.push(`%${q}%`); sql += ` AND (title ILIKE $${params.length} OR summary ILIKE $${params.length})`; }
+    sql += ' ORDER BY sort_order ASC, updated_at DESC';
+    const r = await pool.query(sql, params);
+    return res.json({ code: 200, data: r.rows });
+  } catch (err) {
+    return res.status(500).json({ code: 500, message: '查詢失敗', error: err.message });
+  }
+});
+
+// 取得單一公開作品（或擁有者可看草稿）
+app.get('/api/portfolio/project/:id', authenticateToken, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  try {
+    if (useMemoryStore) {
+      const proj = memoryStore.portfolioProjects.find(p => p.id === id);
+      if (!proj) return res.status(404).json({ code: 404, message: '不存在' });
+      if (!proj.published && proj.user_id !== req.user.userId) return res.status(403).json({ code: 403, message: '無權限' });
+      return res.json({ code: 200, data: proj });
+    }
+    const r = await pool.query('SELECT * FROM portfolio_projects WHERE id=$1', [id]);
+    if (!r.rows.length) return res.status(404).json({ code: 404, message: '不存在' });
+    const proj = r.rows[0];
+    if (!proj.published && proj.user_id !== req.user.userId) return res.status(403).json({ code: 403, message: '無權限' });
+    return res.json({ code: 200, data: proj });
+  } catch (err) { return res.status(500).json({ code: 500, message: '查詢失敗', error: err.message }); }
+});
+
+// 發佈 / 取消發佈
+app.post('/api/portfolio/project/publish', authenticateToken, async (req, res) => {
+  const { id, publish } = req.body || {};
+  if (!id) return res.status(400).json({ code: 400, message: 'id 必填' });
+  try {
+    if (useMemoryStore) {
+      const proj = memoryStore.portfolioProjects.find(p => p.id === id && p.user_id === req.user.userId);
+      if (!proj) return res.status(404).json({ code: 404, message: '找不到作品或無權限' });
+      proj.published = !!publish;
+      proj.status = publish ? 'published' : 'draft';
+      proj.updated_at = new Date();
+      return res.json({ code: 200, message: publish ? '已發佈' : '已下架', data: proj });
+    }
+    const r = await pool.query('UPDATE portfolio_projects SET published=$1, status=$2, updated_at=now() WHERE id=$3 AND user_id=$4 RETURNING *', [!!publish, publish ? 'published' : 'draft', id, req.user.userId]);
+    if (!r.rows.length) return res.status(404).json({ code: 404, message: '找不到作品或無權限' });
+    return res.json({ code: 200, message: publish ? '已發佈' : '已下架', data: r.rows[0] });
+  } catch (err) { return res.status(500).json({ code: 500, message: '操作失敗', error: err.message }); }
+});
+
 // 取消訂單API (強制認證)
 app.delete('/api/orders/:orderId', requireAuth, async (req, res) => {
   const orderId = req.params.orderId;
@@ -1795,10 +2017,15 @@ app.get('/api/anon/v1/market/stock/recommend', (req, res) => {
 // 圖形驗證碼（SVG 格式）- 支持G平台路径
 app.get('/anon/v1/comm/verifcode', (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+  const token = (req.query.token || req.headers['x-session-token'] || '').toString();
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  memoryStore.captchas[ip] = { code, expires: Date.now() + CAPTCHA_EXPIRY_MS };
+  if (token) {
+    memoryStore.captchasByToken[token] = { code, expires: Date.now() + CAPTCHA_EXPIRY_MS };
+  } else {
+    memoryStore.captchas[ip] = { code, expires: Date.now() + CAPTCHA_EXPIRY_MS };
+  }
 
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="120" height="48">
@@ -1817,10 +2044,15 @@ app.get('/anon/v1/comm/verifcode', (req, res) => {
 // 圖形驗證碼（SVG 格式）- 支持带/api前缀的路径
 app.get('/api/anon/v1/comm/verifcode', (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+  const token = (req.query.token || req.headers['x-session-token'] || '').toString();
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  memoryStore.captchas[ip] = { code, expires: Date.now() + CAPTCHA_EXPIRY_MS };
+  if (token) {
+    memoryStore.captchasByToken[token] = { code, expires: Date.now() + CAPTCHA_EXPIRY_MS };
+  } else {
+    memoryStore.captchas[ip] = { code, expires: Date.now() + CAPTCHA_EXPIRY_MS };
+  }
 
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="120" height="48">
