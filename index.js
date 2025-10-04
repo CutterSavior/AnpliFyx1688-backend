@@ -914,9 +914,6 @@ function startBotTradingSystem() {
   
   // 不再執行實際的數據庫操作
   return;
-  
-  // 以下代碼已禁用
-  /*
   // 每 5-15 秒隨機執行一次機器人交易
   setInterval(async () => {
     try {
@@ -1153,9 +1150,6 @@ function startMerchantMarketMaking() {
   
   // 不再執行實際的數據庫操作
   return;
-  
-  // 以下代碼已禁用
-  /*
   // 每 3-8 秒隨機執行一次商家做市
   setInterval(async () => {
     try {
@@ -3329,6 +3323,24 @@ app.post('/api/anon/v1/web3/login', async (req, res) => {
       message: 'Web3 登入失敗: ' + error.message
     });
   }
+});
+
+// 彈窗公告 API
+app.post('/api/authc/v1/notice/popup', authenticateToken, (req, res) => {
+  // 返回空列表，表示沒有彈窗公告
+  res.json({
+    code: 200,
+    data: []
+  });
+});
+
+// 登出 API
+app.post('/api/authc/v1/user/logout', authenticateToken, (req, res) => {
+  // Web3 登入不需要服務器端登出
+  res.json({
+    code: 200,
+    message: '登出成功'
+  });
 });
 
 // 綁定錢包
