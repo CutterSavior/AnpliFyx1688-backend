@@ -1,0 +1,33 @@
+﻿* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
+.panel { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+.hidden { display: none !important; }
+.login-container { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); width: 100%; max-width: 400px; }
+.login-container h1 { text-align: center; margin-bottom: 1.5rem; color: #333; }
+.input-group { position: relative; margin-bottom: 1rem; }
+.input-group i { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #666; }
+.input-group input { width: 100%; padding: 12px 12px 12px 40px; border: 2px solid #e1e1e1; border-radius: 8px; font-size: 14px; }
+#mainPanel { min-height: 100vh; display: block; background: #f5f5f5; }
+.navbar { background: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+.nav-brand { font-size: 1.2rem; font-weight: bold; color: #333; }
+.toolbar { background: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e1e1e1; }
+.category-tabs { display: flex; gap: 0.5rem; }
+.tab-btn { padding: 0.5rem 1rem; border: none; background: #f0f0f0; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
+.tab-btn.active, .tab-btn:hover { background: #667eea; color: white; }
+.toolbar-right { display: flex; gap: 1rem; align-items: center; }
+#searchInput { padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px; width: 200px; }
+.btn { padding: 0.5rem 1rem; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
+.btn-primary { background: #667eea; color: white; }
+.btn-primary:hover { background: #5a6fd8; }
+.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 1rem; padding: 2rem; }
+.file-card { background: white; border-radius: 8px; padding: 1rem; box-shadow: 0 2px 8px rgba(0,0,0,0.1); cursor: pointer; transition: transform 0.2s; }
+.file-card:hover { transform: translateY(-2px); }
+.file-card h4 { margin-bottom: 0.5rem; color: #333; }
+.file-card p { color: #666; font-size: 0.9rem; }
+.file-category { display: inline-block; padding: 0.2rem 0.5rem; background: #e1e8ff; color: #667eea; border-radius: 4px; font-size: 0.8rem; margin-bottom: 0.5rem; }
+.modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal-content { background: white; padding: 2rem; border-radius: 12px; width: 90%; max-width: 500px; max-height: 80vh; overflow-y: auto; }
+.modal h3 { margin-bottom: 1rem; color: #333; }
+.modal form > * { margin-bottom: 1rem; }
+.modal input, .modal select, .modal textarea { width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px; }
+.modal textarea { min-height: 80px; resize: vertical; }

@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -8,6 +9,29 @@ const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
+const { ethers } = require('ethers');
+const crypto = require('crypto');
+// Web3 Nonce 緩存
+const web3NonceCache = new Map();
+
+// 生成隨機 Nonce
+function generateWeb3Nonce() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+// 清理過期 Nonce
+function cleanupExpiredNonces() {
+  const now = Date.now();
+  for (const [address, data] of web3NonceCache.entries()) {
+    if (now - data.timestamp > data.expiresIn) {
+      web3NonceCache.delete(address);
+      console.log(`🧹 清理過期 Nonce: ${address}`);
+    }
+  }
+}
+
+// 每 10 分鐘清理一次
+setInterval(cleanupExpiredNonces, 10 * 60 * 1000);
 
 const app = express();
 // Gzip/Deflate/Brotli 中介層 (需 Node >= v18 才支援自動br negotiation)
@@ -19,6 +43,11 @@ const io = new Server(server, {
       // 开发环境
       'http://localhost:8087',  // G平台开发环境
       'http://localhost:9528',  // A平台开发环境
+      'http://localhost:3000',  // Mobile开发环境
+      /^http:\/\/localhost:\d+$/,  // 所有 localhost 端口
+      /^http:\/\/127\.0\.0\.1:\d+$/,  // 所有 127.0.0.1 端口
+      /^http:\/\/192\.168\.\d+\.\d+:\d+$/,  // 局域网地址
+      /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/,  // 局域网地址
       
       // G平台生产域名
       'https://amplifyx1688.pages.dev',  // G平台预期生产环境
@@ -29,13 +58,23 @@ const io = new Server(server, {
       'https://admin-amplifyx1688.pages.dev',  // A平台预期生产环境
       'https://tw-amplfyx.online',  // A平台实际域名
       
+      // ENS 域名（新增）
+      'https://game.sunexdmoe.eth.limo',
+      'https://admin.sunexdmoe.eth.limo',
+      'https://mobile.sunexdmoe.eth.limo',
+      'https://game.sunexdmoe.eth.link',   // 備用 Gateway
+      'https://admin.sunexdmoe.eth.link',
+      'https://mobile.sunexdmoe.eth.link',
+      
       // 通配符域名支持
       /\.pages\.dev$/,  // Cloudflare Pages域名
       /\.onrender\.com$/,  // Render.com域名
       /\.vercel\.app$/,  // Vercel域名
       /\.netlify\.app$/,  // Netlify域名
       /\.online$/,  // .online域名
-      /\.net$/  // .net域名
+      /\.net$/,  // .net域名
+      /\.eth\.limo$/,    // ENS Gateway (.eth.limo)
+      /\.eth\.link$/     // ENS Gateway (.eth.link)
     ],
     credentials: false,  // 关闭credentials，避免CORS问题
     methods: ['GET', 'POST']
@@ -50,6 +89,11 @@ app.use(cors({
     // 开发环境
     'http://localhost:8087',  // G平台开发环境
     'http://localhost:9528',  // A平台开发环境
+    'http://localhost:3000',  // Mobile开发环境
+    /^http:\/\/localhost:\d+$/,  // 所有 localhost 端口
+    /^http:\/\/127\.0\.0\.1:\d+$/,  // 所有 127.0.0.1 端口
+    /^http:\/\/192\.168\.\d+\.\d+:\d+$/,  // 局域网地址
+    /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/,  // 局域网地址
     
     // G平台生产域名
     'https://amplifyx1688.pages.dev',  // G平台预期生产环境
@@ -60,13 +104,23 @@ app.use(cors({
     'https://admin-amplifyx1688.pages.dev',  // A平台预期生产环境
     'https://tw-amplfyx.online',  // A平台实际域名（注意：amplfyx缺少i）
     
+    // ENS 域名（新增）
+    'https://game.sunexdmoe.eth.limo',
+    'https://admin.sunexdmoe.eth.limo',
+    'https://mobile.sunexdmoe.eth.limo',
+    'https://game.sunexdmoe.eth.link',   // 備用 Gateway
+    'https://admin.sunexdmoe.eth.link',
+    'https://mobile.sunexdmoe.eth.link',
+    
     // 通配符域名支持
     /\.pages\.dev$/,  // Cloudflare Pages域名
     /\.onrender\.com$/,  // Render.com域名
     /\.vercel\.app$/,  // Vercel域名
     /\.netlify\.app$/,  // Netlify域名
     /\.online$/,  // .online域名
-    /\.net$/  // .net域名
+    /\.net$/,  // .net域名
+    /\.eth\.limo$/,    // ENS Gateway (.eth.limo)
+    /\.eth\.link$/     // ENS Gateway (.eth.link)
   ],
   credentials: false,  // 关闭credentials，避免CORS问题
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -84,6 +138,60 @@ app.use(compression({
     return compression.filter(req, res);
   }
 }));
+
+// ==== 真實加密貨幣價格緩存 ====
+let cryptoPriceCache = {
+  BTCUSDT: { price: 43500, change24h: 2.5, volume24h: 25000000000, lastUpdate: Date.now() },
+  ETHUSDT: { price: 2300, change24h: 1.8, volume24h: 12000000000, lastUpdate: Date.now() },
+  BNBUSDT: { price: 320, change24h: -0.5, volume24h: 1500000000, lastUpdate: Date.now() },
+  SOLUSDT: { price: 98, change24h: 3.2, volume24h: 2000000000, lastUpdate: Date.now() },
+  XRPUSDT: { price: 0.52, change24h: 1.1, volume24h: 1800000000, lastUpdate: Date.now() },
+  ADAUSDT: { price: 0.38, change24h: -1.2, volume24h: 800000000, lastUpdate: Date.now() },
+  DOGEUSDT: { price: 0.088, change24h: 0.8, volume24h: 600000000, lastUpdate: Date.now() },
+  MATICUSDT: { price: 0.75, change24h: 2.1, volume24h: 500000000, lastUpdate: Date.now() }
+};
+
+// 從 Binance API 獲取真實價格
+function fetchRealCryptoPrices() {
+  const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT', 'MATICUSDT'];
+  
+  symbols.forEach(symbol => {
+    const options = {
+      hostname: 'api.binance.com',
+      path: `/api/v3/ticker/24hr?symbol=${symbol}`,
+      method: 'GET',
+      timeout: 5000
+    };
+    
+    https.get(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.symbol) {
+            cryptoPriceCache[symbol] = {
+              price: parseFloat(json.lastPrice),
+              change24h: parseFloat(json.priceChangePercent),
+              volume24h: parseFloat(json.quoteVolume),
+              high24h: parseFloat(json.highPrice),
+              low24h: parseFloat(json.lowPrice),
+              lastUpdate: Date.now()
+            };
+          }
+        } catch (e) {
+          console.warn(`Failed to parse Binance data for ${symbol}:`, e.message);
+        }
+      });
+    }).on('error', (e) => {
+      console.warn(`Failed to fetch ${symbol} price:`, e.message);
+    });
+  });
+}
+
+// 每30秒更新一次價格
+setInterval(fetchRealCryptoPrices, 30000);
+fetchRealCryptoPrices(); // 立即執行一次
 
 // ==== 靜態應用掛載 (/app/*) ====
 const path = require('path');
@@ -444,8 +552,9 @@ async function startApplication() {
       console.log('🗄️ Initializing database...');
       await ensureDbInit();
       
-      // 創建默認管理員用戶
+      // 創建默認管理員和測試用戶
       try {
+        // 管理員帳號
         const adminCheck = await pool.query('SELECT id FROM users WHERE username = $1', ['admin']);
         if (adminCheck.rows.length === 0) {
           const hashedPassword = await bcrypt.hash('admin123', 12);
@@ -454,7 +563,7 @@ async function startApplication() {
             VALUES ($1, $2, $3, $4, $5, $6)
           `, [
             'admin',
-            'admin@example.com',
+            'admin@gmail.com',
             hashedPassword,
             'active',
             0,
@@ -471,32 +580,258 @@ async function startApplication() {
         } else {
           console.log('👤 Admin user already exists');
         }
+        
+        // 測試用戶帳號
+        const userCheck = await pool.query('SELECT id FROM users WHERE username = $1', ['user']);
+        if (userCheck.rows.length === 0) {
+          const hashedPassword = await bcrypt.hash('user123', 12);
+          await pool.query(`
+            INSERT INTO users (username, email, password_hash, status, balance, metadata) 
+            VALUES ($1, $2, $3, $4, $5, $6)
+          `, [
+            'user',
+            'user@gmail.com',
+            hashedPassword,
+            'active',
+            10000, // 給予初始餘額 100 USDT (儲存為分)
+            JSON.stringify({
+              realname: '測試用戶',
+              phone: '',
+              level: 'VIP1',
+              google_bound: 'false',
+              identity_verified: 'false',
+              kyc_status: 'none'
+            })
+          ]);
+          console.log('👤 Created default test user: user / user123');
+        } else {
+          console.log('👤 Test user already exists');
+        }
+        
+        // 🤖 創建20隻機器人場控帳號
+        const botNames = [
+          'Bot_Dragon', 'Bot_Tiger', 'Bot_Phoenix', 'Bot_Wolf', 'Bot_Eagle',
+          'Bot_Lion', 'Bot_Bear', 'Bot_Shark', 'Bot_Falcon', 'Bot_Cobra',
+          'Bot_Panther', 'Bot_Hawk', 'Bot_Fox', 'Bot_Lynx', 'Bot_Viper',
+          'Bot_Leopard', 'Bot_Raven', 'Bot_Cheetah', 'Bot_Jaguar', 'Bot_Puma'
+        ];
+        
+        for (let i = 0; i < botNames.length; i++) {
+          const botUsername = botNames[i].toLowerCase();
+          const botCheck = await pool.query('SELECT id FROM users WHERE username = $1', [botUsername]);
+          
+          if (botCheck.rows.length === 0) {
+            const hashedPassword = await bcrypt.hash(`bot${i+1}123`, 12);
+            const initialBalance = Math.floor(Math.random() * 50000) + 10000; // 100-500 USDT
+            
+            await pool.query(`
+              INSERT INTO users (username, email, password_hash, status, balance, metadata) 
+              VALUES ($1, $2, $3, $4, $5, $6)
+            `, [
+              botUsername,
+              `${botUsername}@system.local`,
+              hashedPassword,
+              'active',
+              initialBalance,
+              JSON.stringify({
+                realname: botNames[i],
+                phone: '',
+                level: 'BOT',
+                google_bound: 'false',
+                identity_verified: 'true',
+                kyc_status: 'verified',
+                is_bot: true,
+                bot_strategy: i % 3 === 0 ? 'aggressive' : i % 3 === 1 ? 'conservative' : 'balanced',
+                win_rate: 0.35 + Math.random() * 0.25 // 35%-60% 勝率，平台有優勢
+              })
+            ]);
+            console.log(`🤖 Created bot ${i+1}/20: ${botUsername}`);
+          }
+        }
+        
+        // 🏪 創建8-12個商家帳號
+        const merchantCount = 8 + Math.floor(Math.random() * 5); // 8-12個
+        const merchantNames = [
+          'Merchant_Gold', 'Merchant_Silver', 'Merchant_Diamond', 'Merchant_Platinum',
+          'Merchant_Ruby', 'Merchant_Sapphire', 'Merchant_Emerald', 'Merchant_Pearl',
+          'Merchant_Jade', 'Merchant_Amber', 'Merchant_Topaz', 'Merchant_Opal'
+        ];
+        
+        for (let i = 0; i < merchantCount; i++) {
+          const merchantUsername = merchantNames[i].toLowerCase();
+          const merchantCheck = await pool.query('SELECT id FROM users WHERE username = $1', [merchantUsername]);
+          
+          if (merchantCheck.rows.length === 0) {
+            const hashedPassword = await bcrypt.hash(`merchant${i+1}123`, 12);
+            const initialBalance = Math.floor(Math.random() * 200000) + 50000; // 500-2500 USDT
+            
+            await pool.query(`
+              INSERT INTO users (username, email, password_hash, status, balance, metadata) 
+              VALUES ($1, $2, $3, $4, $5, $6)
+            `, [
+              merchantUsername,
+              `${merchantUsername}@merchant.local`,
+              hashedPassword,
+              'active',
+              initialBalance,
+              JSON.stringify({
+                realname: merchantNames[i],
+                phone: '',
+                level: 'MERCHANT',
+                google_bound: 'false',
+                identity_verified: 'true',
+                kyc_status: 'verified',
+                is_merchant: true,
+                merchant_type: i % 2 === 0 ? 'liquidity_provider' : 'market_maker',
+                commission_rate: 0.001 + Math.random() * 0.002 // 0.1%-0.3% 手續費
+              })
+            ]);
+            console.log(`🏪 Created merchant ${i+1}/${merchantCount}: ${merchantUsername}`);
+          }
+        }
+        console.log(`✅ Seeded ${botNames.length} bots and ${merchantCount} merchants`);
       } catch (e) {
-        console.warn('Failed to create default admin user:', e?.message || e);
+        console.warn('Failed to create default users:', e?.message || e);
       }
       
       console.log('📊 Database initialized and ready');
     } else {
       console.log('💾 Using memory store (no database required)');
-      // 記憶體模式：建立預設管理員帳號，便於本機測試登入
+      // 記憶體模式：建立預設管理員和測試用戶
       try {
-        const exists = memoryStore.adminUsers.find(u => u.username === 'admin' || u.email === 'admin@example.com');
-        if (!exists) {
+        // 管理員帳號
+        const adminExists = memoryStore.users.find(u => u.username === 'admin' || u.email === 'admin@gmail.com');
+        if (!adminExists) {
           const hashedPassword = await bcrypt.hash('admin123', 12);
-          const user = {
-            id: memoryStore.nextAdminUserId++,
+          const admin = {
+            id: memoryStore.nextUserId++,
             username: 'admin',
-            email: 'admin@example.com',
+            email: 'admin@gmail.com',
             password_hash: hashedPassword,
             status: 'active',
             balance: 0,
+            metadata: {
+              realname: '系統管理員',
+              level: 'Admin',
+              google_bound: 'true',
+              identity_verified: 'true',
+              kyc_status: 'verified'
+            },
             created_at: new Date()
           };
-          memoryStore.adminUsers.push(user);
+          memoryStore.users.push(admin);
+          memoryStore.adminUsers.push(admin); // 同步到 adminUsers
           console.log('👤 Seeded default admin user: admin / admin123');
         }
+        
+        // 測試用戶帳號
+        const userExists = memoryStore.users.find(u => u.username === 'user' || u.email === 'user@gmail.com');
+        if (!userExists) {
+          const hashedPassword = await bcrypt.hash('user123', 12);
+          const user = {
+            id: memoryStore.nextUserId++,
+            username: 'user',
+            email: 'user@gmail.com',
+            password_hash: hashedPassword,
+            status: 'active',
+            balance: 10000, // 100 USDT 初始餘額
+            metadata: {
+              realname: '測試用戶',
+              level: 'VIP1',
+              google_bound: 'false',
+              identity_verified: 'false',
+              kyc_status: 'none'
+            },
+            created_at: new Date()
+          };
+          memoryStore.users.push(user);
+          console.log('👤 Seeded default test user: user / user123');
+        }
+        
+        // 🤖 創建20隻機器人場控帳號（記憶體模式）
+        const botNames = [
+          'Bot_Dragon', 'Bot_Tiger', 'Bot_Phoenix', 'Bot_Wolf', 'Bot_Eagle',
+          'Bot_Lion', 'Bot_Bear', 'Bot_Shark', 'Bot_Falcon', 'Bot_Cobra',
+          'Bot_Panther', 'Bot_Hawk', 'Bot_Fox', 'Bot_Lynx', 'Bot_Viper',
+          'Bot_Leopard', 'Bot_Raven', 'Bot_Cheetah', 'Bot_Jaguar', 'Bot_Puma'
+        ];
+        
+        for (let i = 0; i < botNames.length; i++) {
+          const botUsername = botNames[i].toLowerCase();
+          const botExists = memoryStore.users.find(u => u.username === botUsername);
+          
+          if (!botExists) {
+            const hashedPassword = await bcrypt.hash(`bot${i+1}123`, 12);
+            const initialBalance = Math.floor(Math.random() * 50000) + 10000; // 100-500 USDT
+            
+            const bot = {
+              id: memoryStore.nextUserId++,
+              username: botUsername,
+              email: `${botUsername}@system.local`,
+              password_hash: hashedPassword,
+              status: 'active',
+              balance: initialBalance,
+              metadata: {
+                realname: botNames[i],
+                phone: '',
+                level: 'BOT',
+                google_bound: 'false',
+                identity_verified: 'true',
+                kyc_status: 'verified',
+                is_bot: true,
+                bot_strategy: i % 3 === 0 ? 'aggressive' : i % 3 === 1 ? 'conservative' : 'balanced',
+                win_rate: 0.35 + Math.random() * 0.25 // 35%-60% 勝率
+              },
+              created_at: new Date()
+            };
+            memoryStore.users.push(bot);
+            console.log(`🤖 Seeded bot ${i+1}/20: ${botUsername}`);
+          }
+        }
+        
+        // 🏪 創建8-12個商家帳號（記憶體模式）
+        const merchantCount = 8 + Math.floor(Math.random() * 5); // 8-12個
+        const merchantNames = [
+          'Merchant_Gold', 'Merchant_Silver', 'Merchant_Diamond', 'Merchant_Platinum',
+          'Merchant_Ruby', 'Merchant_Sapphire', 'Merchant_Emerald', 'Merchant_Pearl',
+          'Merchant_Jade', 'Merchant_Amber', 'Merchant_Topaz', 'Merchant_Opal'
+        ];
+        
+        for (let i = 0; i < merchantCount; i++) {
+          const merchantUsername = merchantNames[i].toLowerCase();
+          const merchantExists = memoryStore.users.find(u => u.username === merchantUsername);
+          
+          if (!merchantExists) {
+            const hashedPassword = await bcrypt.hash(`merchant${i+1}123`, 12);
+            const initialBalance = Math.floor(Math.random() * 200000) + 50000; // 500-2500 USDT
+            
+            const merchant = {
+              id: memoryStore.nextUserId++,
+              username: merchantUsername,
+              email: `${merchantUsername}@merchant.local`,
+              password_hash: hashedPassword,
+              status: 'active',
+              balance: initialBalance,
+              metadata: {
+                realname: merchantNames[i],
+                phone: '',
+                level: 'MERCHANT',
+                google_bound: 'false',
+                identity_verified: 'true',
+                kyc_status: 'verified',
+                is_merchant: true,
+                merchant_type: i % 2 === 0 ? 'liquidity_provider' : 'market_maker',
+                commission_rate: 0.001 + Math.random() * 0.002 // 0.1%-0.3% 手續費
+              },
+              created_at: new Date()
+            };
+            memoryStore.users.push(merchant);
+            console.log(`🏪 Seeded merchant ${i+1}/${merchantCount}: ${merchantUsername}`);
+          }
+        }
+        console.log(`✅ Memory store seeded: ${botNames.length} bots and ${merchantCount} merchants`);
       } catch (e) {
-        console.warn('Failed to seed default admin user:', e?.message || e);
+        console.warn('Failed to seed default users:', e?.message || e);
       }
     }
     
@@ -508,11 +843,472 @@ async function startApplication() {
       if (useMemoryStore) {
         console.log('⚠️  Memory store mode - data will not persist between restarts');
       }
+      
+      // 🤖 啟動機器人自動交易系統
+      startBotTradingSystem();
+      
+      // 🏪 啟動商家做市系統
+      startMerchantMarketMaking();
     });
     
   } catch (err) {
     console.error('❌ Failed to start application:', err);
     process.exit(1);
+  }
+}
+
+// ==========================================
+// 🤖 機器人自動交易系統
+// ==========================================
+function startBotTradingSystem() {
+  console.log('🤖 機器人自動交易系統啟動...');
+  
+  // 每 5-15 秒隨機執行一次機器人交易
+  setInterval(async () => {
+    try {
+      const bots = useMemoryStore 
+        ? memoryStore.users.filter(u => u.metadata?.is_bot)
+        : (await pool.query('SELECT * FROM users WHERE metadata->>\'is_bot\' = \'true\' AND status = \'active\'')).rows;
+      
+      if (bots.length === 0) return;
+      
+      // 隨機選擇 1-3 個機器人執行交易
+      const activeBotCount = Math.floor(Math.random() * 3) + 1;
+      const selectedBots = [];
+      for (let i = 0; i < activeBotCount && i < bots.length; i++) {
+        const randomBot = bots[Math.floor(Math.random() * bots.length)];
+        if (!selectedBots.includes(randomBot)) {
+          selectedBots.push(randomBot);
+        }
+      }
+      
+      for (const bot of selectedBots) {
+        await executeBotTrade(bot);
+      }
+    } catch (error) {
+      console.error('機器人交易錯誤:', error.message);
+    }
+  }, 5000 + Math.random() * 10000); // 5-15秒
+}
+
+// 執行單個機器人的交易
+async function executeBotTrade(bot) {
+  try {
+    const metadata = bot.metadata || {};
+    const strategy = metadata.bot_strategy || 'balanced';
+    const winRate = metadata.win_rate || 0.45;
+    
+    // 根據策略決定交易參數
+    let tradeParams = {};
+    switch (strategy) {
+      case 'aggressive':
+        tradeParams = {
+          symbols: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT'],
+          minAmount: 500,
+          maxAmount: 5000,
+          priceVariation: 0.02 // ±2%
+        };
+        break;
+      case 'conservative':
+        tradeParams = {
+          symbols: ['BTCUSDT', 'ETHUSDT'],
+          minAmount: 100,
+          maxAmount: 1000,
+          priceVariation: 0.005 // ±0.5%
+        };
+        break;
+      default: // balanced
+        tradeParams = {
+          symbols: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT'],
+          minAmount: 200,
+          maxAmount: 2000,
+          priceVariation: 0.01 // ±1%
+        };
+    }
+    
+    // 隨機選擇交易對
+    const symbol = tradeParams.symbols[Math.floor(Math.random() * tradeParams.symbols.length)];
+    
+    // 獲取當前價格
+    const basePrice = cryptoPriceCache[symbol]?.price || 50000;
+    
+    // 根據策略添加價格變動
+    const priceChange = (Math.random() - 0.5) * 2 * tradeParams.priceVariation;
+    const price = basePrice * (1 + priceChange);
+    
+    // 隨機決定買/賣
+    const side = Math.random() > 0.5 ? 'buy' : 'sell';
+    
+    // 隨機金額
+    const amount = (tradeParams.minAmount + Math.random() * (tradeParams.maxAmount - tradeParams.minAmount)) / price;
+    
+    // 檢查餘額
+    const balance = useMemoryStore ? bot.balance : BigInt(bot.balance);
+    const orderValue = Math.floor(price * amount * 100);
+    
+    if (side === 'buy' && Number(balance) < orderValue) {
+      return; // 餘額不足，跳過
+    }
+    
+    // 創建訂單
+    if (useMemoryStore) {
+      const order = {
+        id: memoryStore.nextOrderId++,
+        user_id: bot.id,
+        symbol,
+        side,
+        price: Math.floor(price * 100),
+        amount: Math.floor(amount * 100),
+        remaining: Math.floor(amount * 100),
+        type: 'limit',
+        status: 'open',
+        created_at: new Date()
+      };
+      memoryStore.orders.push(order);
+      
+      if (side === 'buy') {
+        bot.balance -= orderValue;
+      }
+      
+      // 廣播訂單
+      io.emit('order:created', {
+        ...order,
+        username: bot.username,
+        is_bot: true
+      });
+      
+      // 根據勝率決定是否立即成交
+      if (Math.random() < winRate) {
+        setTimeout(() => executeBotOrderFill(order, bot), 1000 + Math.random() * 5000);
+      }
+    } else {
+      await pool.query('BEGIN');
+      
+      const orderResult = await pool.query(
+        'INSERT INTO orders (user_id, symbol, side, price, amount, remaining, type, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now()) RETURNING *',
+        [bot.id, symbol, side, BigInt(Math.floor(price * 100)), BigInt(Math.floor(amount * 100)), BigInt(Math.floor(amount * 100)), 'limit', 'open']
+      );
+      
+      const order = orderResult.rows[0];
+      
+      if (side === 'buy') {
+        await pool.query('UPDATE users SET balance = balance - $1 WHERE id = $2', [orderValue.toString(), bot.id]);
+      }
+      
+      await pool.query('COMMIT');
+      
+      io.emit('order:created', {
+        ...order,
+        username: bot.username,
+        is_bot: true
+      });
+      
+      // 根據勝率決定是否立即成交
+      if (Math.random() < winRate) {
+        setTimeout(() => executeBotOrderFill(order, bot), 1000 + Math.random() * 5000);
+      }
+    }
+    
+    console.log(`🤖 Bot ${bot.username} placed ${side} order: ${symbol} @ $${price.toFixed(2)}`);
+  } catch (error) {
+    console.error(`機器人 ${bot.username} 交易失敗:`, error.message);
+  }
+}
+
+// 執行機器人訂單成交
+async function executeBotOrderFill(order, bot) {
+  try {
+    if (useMemoryStore) {
+      const orderIndex = memoryStore.orders.findIndex(o => o.id === order.id);
+      if (orderIndex === -1 || memoryStore.orders[orderIndex].status !== 'open') return;
+      
+      memoryStore.orders[orderIndex].status = 'filled';
+      memoryStore.orders[orderIndex].remaining = 0;
+      
+      // 創建成交記錄
+      const trade = {
+        id: memoryStore.nextTradeId++,
+        buy_order_id: order.side === 'buy' ? order.id : null,
+        sell_order_id: order.side === 'sell' ? order.id : null,
+        price: order.price,
+        amount: order.amount,
+        created_at: new Date()
+      };
+      memoryStore.trades.push(trade);
+      
+      // 更新餘額
+      if (order.side === 'sell') {
+        bot.balance += Number(order.price) * Number(order.amount) / 10000;
+      }
+      
+      io.emit('order:filled', {
+        ...memoryStore.orders[orderIndex],
+        username: bot.username,
+        is_bot: true
+      });
+    } else {
+      await pool.query('BEGIN');
+      
+      const orderCheck = await pool.query('SELECT * FROM orders WHERE id = $1 AND status = \'open\'', [order.id]);
+      if (orderCheck.rows.length === 0) {
+        await pool.query('ROLLBACK');
+        return;
+      }
+      
+      await pool.query('UPDATE orders SET status = \'filled\', remaining = 0 WHERE id = $1', [order.id]);
+      
+      const tradeResult = await pool.query(
+        'INSERT INTO trades (buy_order_id, sell_order_id, price, amount, created_at) VALUES ($1, $2, $3, $4, now()) RETURNING *',
+        [order.side === 'buy' ? order.id : null, order.side === 'sell' ? order.id : null, order.price, order.amount]
+      );
+      
+      if (order.side === 'sell') {
+        const orderValue = Number(order.price) * Number(order.amount) / 10000;
+        await pool.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [orderValue.toString(), bot.id]);
+      }
+      
+      await pool.query('COMMIT');
+      
+      io.emit('order:filled', {
+        ...order,
+        username: bot.username,
+        is_bot: true
+      });
+    }
+    
+    console.log(`✅ Bot ${bot.username} order filled: ${order.symbol}`);
+  } catch (error) {
+    console.error('機器人訂單成交失敗:', error.message);
+    if (!useMemoryStore) {
+      await pool.query('ROLLBACK');
+    }
+  }
+}
+
+// ==========================================
+// 🏪 商家做市系統
+// ==========================================
+function startMerchantMarketMaking() {
+  console.log('🏪 商家做市系統啟動...');
+  
+  // 每 3-8 秒隨機執行一次商家做市
+  setInterval(async () => {
+    try {
+      const merchants = useMemoryStore 
+        ? memoryStore.users.filter(u => u.metadata?.is_merchant)
+        : (await pool.query('SELECT * FROM users WHERE metadata->>\'is_merchant\' = \'true\' AND status = \'active\'')).rows;
+      
+      if (merchants.length === 0) return;
+      
+      // 隨機選擇 1-2 個商家執行做市
+      const activeMerchantCount = Math.floor(Math.random() * 2) + 1;
+      const selectedMerchants = [];
+      for (let i = 0; i < activeMerchantCount && i < merchants.length; i++) {
+        const randomMerchant = merchants[Math.floor(Math.random() * merchants.length)];
+        if (!selectedMerchants.includes(randomMerchant)) {
+          selectedMerchants.push(randomMerchant);
+        }
+      }
+      
+      for (const merchant of selectedMerchants) {
+        await executeMerchantMarketMaking(merchant);
+      }
+    } catch (error) {
+      console.error('商家做市錯誤:', error.message);
+    }
+  }, 3000 + Math.random() * 5000); // 3-8秒
+}
+
+// 執行商家做市
+async function executeMerchantMarketMaking(merchant) {
+  try {
+    const metadata = merchant.metadata || {};
+    const merchantType = metadata.merchant_type || 'market_maker';
+    const commissionRate = metadata.commission_rate || 0.002;
+    
+    // 主流交易對
+    const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'];
+    const symbol = symbols[Math.floor(Math.random() * symbols.length)];
+    
+    // 獲取當前市場價格
+    const marketPrice = cryptoPriceCache[symbol]?.price || 50000;
+    
+    if (merchantType === 'liquidity_provider') {
+      // 流動性提供者：同時掛買單和賣單
+      const spread = 0.001; // 0.1% 價差
+      const buyPrice = marketPrice * (1 - spread);
+      const sellPrice = marketPrice * (1 + spread);
+      const amount = (1000 + Math.random() * 4000) / marketPrice; // $1000-5000
+      
+      // 掛買單
+      await createMerchantOrder(merchant, symbol, 'buy', buyPrice, amount);
+      
+      // 掛賣單
+      await createMerchantOrder(merchant, symbol, 'sell', sellPrice, amount);
+      
+      console.log(`🏪 Liquidity Provider ${merchant.username}: ${symbol} bid=$${buyPrice.toFixed(2)} ask=$${sellPrice.toFixed(2)}`);
+    } else {
+      // 做市商：根據市場情況調整報價
+      const side = Math.random() > 0.5 ? 'buy' : 'sell';
+      const priceAdjustment = (Math.random() - 0.5) * 0.002; // ±0.2%
+      const price = marketPrice * (1 + priceAdjustment);
+      const amount = (2000 + Math.random() * 8000) / marketPrice; // $2000-10000
+      
+      await createMerchantOrder(merchant, symbol, side, price, amount);
+      
+      console.log(`🏪 Market Maker ${merchant.username}: ${side} ${symbol} @ $${price.toFixed(2)}`);
+    }
+  } catch (error) {
+    console.error(`商家 ${merchant.username} 做市失敗:`, error.message);
+  }
+}
+
+// 創建商家訂單
+async function createMerchantOrder(merchant, symbol, side, price, amount) {
+  try {
+    const orderValue = Math.floor(price * amount * 100);
+    
+    if (useMemoryStore) {
+      // 檢查餘額
+      if (side === 'buy' && merchant.balance < orderValue) {
+        return; // 餘額不足
+      }
+      
+      const order = {
+        id: memoryStore.nextOrderId++,
+        user_id: merchant.id,
+        symbol,
+        side,
+        price: Math.floor(price * 100),
+        amount: Math.floor(amount * 100),
+        remaining: Math.floor(amount * 100),
+        type: 'limit',
+        status: 'open',
+        created_at: new Date()
+      };
+      memoryStore.orders.push(order);
+      
+      if (side === 'buy') {
+        merchant.balance -= orderValue;
+      }
+      
+      io.emit('order:created', {
+        ...order,
+        username: merchant.username,
+        is_merchant: true
+      });
+      
+      // 商家訂單有較高機率快速成交
+      if (Math.random() < 0.7) {
+        setTimeout(() => executeMerchantOrderFill(order, merchant), 500 + Math.random() * 3000);
+      }
+    } else {
+      await pool.query('BEGIN');
+      
+      const balanceCheck = await pool.query('SELECT balance FROM users WHERE id = $1', [merchant.id]);
+      if (side === 'buy' && Number(balanceCheck.rows[0].balance) < orderValue) {
+        await pool.query('ROLLBACK');
+        return;
+      }
+      
+      const orderResult = await pool.query(
+        'INSERT INTO orders (user_id, symbol, side, price, amount, remaining, type, status, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now()) RETURNING *',
+        [merchant.id, symbol, side, BigInt(Math.floor(price * 100)), BigInt(Math.floor(amount * 100)), BigInt(Math.floor(amount * 100)), 'limit', 'open']
+      );
+      
+      const order = orderResult.rows[0];
+      
+      if (side === 'buy') {
+        await pool.query('UPDATE users SET balance = balance - $1 WHERE id = $2', [orderValue.toString(), merchant.id]);
+      }
+      
+      await pool.query('COMMIT');
+      
+      io.emit('order:created', {
+        ...order,
+        username: merchant.username,
+        is_merchant: true
+      });
+      
+      // 商家訂單有較高機率快速成交
+      if (Math.random() < 0.7) {
+        setTimeout(() => executeMerchantOrderFill(order, merchant), 500 + Math.random() * 3000);
+      }
+    }
+  } catch (error) {
+    console.error('創建商家訂單失敗:', error.message);
+    if (!useMemoryStore) {
+      await pool.query('ROLLBACK');
+    }
+  }
+}
+
+// 執行商家訂單成交
+async function executeMerchantOrderFill(order, merchant) {
+  try {
+    if (useMemoryStore) {
+      const orderIndex = memoryStore.orders.findIndex(o => o.id === order.id);
+      if (orderIndex === -1 || memoryStore.orders[orderIndex].status !== 'open') return;
+      
+      memoryStore.orders[orderIndex].status = 'filled';
+      memoryStore.orders[orderIndex].remaining = 0;
+      
+      const trade = {
+        id: memoryStore.nextTradeId++,
+        buy_order_id: order.side === 'buy' ? order.id : null,
+        sell_order_id: order.side === 'sell' ? order.id : null,
+        price: order.price,
+        amount: order.amount,
+        created_at: new Date()
+      };
+      memoryStore.trades.push(trade);
+      
+      if (order.side === 'sell') {
+        const orderValue = Number(order.price) * Number(order.amount) / 10000;
+        merchant.balance += orderValue;
+      }
+      
+      io.emit('order:filled', {
+        ...memoryStore.orders[orderIndex],
+        username: merchant.username,
+        is_merchant: true
+      });
+    } else {
+      await pool.query('BEGIN');
+      
+      const orderCheck = await pool.query('SELECT * FROM orders WHERE id = $1 AND status = \'open\'', [order.id]);
+      if (orderCheck.rows.length === 0) {
+        await pool.query('ROLLBACK');
+        return;
+      }
+      
+      await pool.query('UPDATE orders SET status = \'filled\', remaining = 0 WHERE id = $1', [order.id]);
+      
+      await pool.query(
+        'INSERT INTO trades (buy_order_id, sell_order_id, price, amount, created_at) VALUES ($1, $2, $3, $4, now())',
+        [order.side === 'buy' ? order.id : null, order.side === 'sell' ? order.id : null, order.price, order.amount]
+      );
+      
+      if (order.side === 'sell') {
+        const orderValue = Number(order.price) * Number(order.amount) / 10000;
+        await pool.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [orderValue.toString(), merchant.id]);
+      }
+      
+      await pool.query('COMMIT');
+      
+      io.emit('order:filled', {
+        ...order,
+        username: merchant.username,
+        is_merchant: true
+      });
+    }
+    
+    console.log(`✅ Merchant ${merchant.username} order filled: ${order.symbol}`);
+  } catch (error) {
+    console.error('商家訂單成交失敗:', error.message);
+    if (!useMemoryStore) {
+      await pool.query('ROLLBACK');
+    }
   }
 }
 
@@ -916,60 +1712,68 @@ app.get('/anon/v1/ticker/*', (req, res) => {
   });
 });
 
-// G平台Google验证器获取 - 无/api前缀
-app.post('/authc/v1/auth/google/get', authenticateToken, async (req, res) => {
+// 設定網路掛鉤以接收 Pinata 事件
+app.post('/api/pinata/webhook', (req, res) => {
+  console.log('Received Pinata event:', req.body);
+  // 根據需要新增具體的事件處理邏輯
+  res.json({ status: 'success', message: 'Pinata event received' });
+});
+
+// Google 驗證器相關 API
+app.post('/api/authc/v1/auth/google/get', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     
-    let user;
-    if (useMemoryStore) {
-      user = memoryStore.users.find(u => u.id === userId);
-    } else {
-      const result = await pool.query('SELECT metadata FROM users WHERE id = $1', [userId]);
-      user = result.rows[0];
-    }
+    // 查詢用戶是否已綁定 Google 驗證器
+    const userQuery = `
+      SELECT metadata
+      FROM users 
+      WHERE id = $1
+    `;
     
-    if (!user) {
+    const result = await pool.query(userQuery, [userId]);
+    
+    if (result.rows.length === 0) {
       return res.status(404).json({
         code: 404,
-        message: '用户不存在'
+        message: '用戶不存在'
       });
     }
     
+    const user = result.rows[0];
     const metadata = user.metadata || {};
     
-    // 如果已经绑定，返回提示
+    // 如果已經綁定，返回提示
     if (metadata.google_bound === 'true') {
       return res.json({
         code: 200,
-        message: '已绑定Google验证器',
+        message: '已綁定Google驗證器',
         googlebind: true
       });
     }
     
-    // 生成 Google 验证器密钥（演示用）
+    // 生成 Google 驗證器密鑰（演示用）
     const googleSecret = 'DEMO' + Math.random().toString(36).substring(2, 18).toUpperCase();
     const qrCodeUrl = `otpauth://totp/AmpliFy:${user.username || userId}?secret=${googleSecret}&issuer=AmpliFy`;
     
     res.json({
       code: 200,
-      message: '获取成功',
+      message: '獲取成功',
       googlesecret: googleSecret,
       googlesecretqr: qrCodeUrl,
       googlebind: false
     });
   } catch (error) {
-    console.error('获取Google验证器信息失败:', error);
+    console.error('獲取Google驗證器信息失敗:', error);
     res.status(500).json({
       code: 500,
-      message: '获取失败',
+      message: '獲取失敗',
       error: error.message
     });
   }
 });
 
-// G平台Google验证器绑定 - 无/api前缀
-app.post('/authc/v1/auth/google/bind', authenticateToken, async (req, res) => {
+app.post('/api/authc/v1/auth/google/bind', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const { googlesecret, googlecode } = req.body || {};
@@ -977,529 +1781,502 @@ app.post('/authc/v1/auth/google/bind', authenticateToken, async (req, res) => {
     if (!googlesecret || !googlecode) {
       return res.status(400).json({
         code: 400,
-        message: '参数不完整'
+        message: '參數不完整'
       });
     }
     
-    // 简单验证（生产环境应该用真实的 TOTP 验证）
+    // 簡單驗證（生產環境應該用真實的 TOTP 驗證）
     if (googlecode.length !== 6 || !/^\d{6}$/.test(googlecode)) {
       return res.status(400).json({
         code: 400,
-        message: '验证码格式错误'
+        message: '驗證碼格式錯誤'
       });
     }
     
-    if (useMemoryStore) {
-      const user = memoryStore.users.find(u => u.id === userId);
-      if (user) {
-        user.metadata = user.metadata || {};
-        user.metadata.google_bound = 'true';
-      }
-    } else {
-      await pool.query(`
-        UPDATE users 
-        SET metadata = jsonb_set(
-          COALESCE(metadata, '{}'), 
-          '{google_bound}', 
-          '"true"'
-        ),
-        updated_at = now()
-        WHERE id = $1
-      `, [userId]);
-    }
+    // 更新用戶元數據
+    const updateQuery = `
+      UPDATE users 
+      SET metadata = jsonb_set(
+        COALESCE(metadata, '{}'), 
+        '{google_bound}', 
+        '"true"'
+      ),
+      updated_at = now()
+      WHERE id = $1
+    `;
+    
+    await pool.query(updateQuery, [userId]);
     
     res.json({
       code: 200,
-      message: '绑定成功'
+      message: '綁定成功'
     });
   } catch (error) {
-    console.error('绑定Google验证器失败:', error);
+    console.error('綁定Google驗證器失敗:', error);
     res.status(500).json({
       code: 500,
-      message: '绑定失败',
+      message: '綁定失敗',
       error: error.message
     });
   }
 });
 
-// 与前端对齐：匿名注册（需要图形验证码）- 带/api前缀
-app.post('/api/anon/v1/user/register', async (req, res) => {
-  const { username, email, password, verifcode } = req.body || {};
-
-  // 驗證圖形驗證碼（以 IP 作為簡易關聯）
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-  const rec = memoryStore.captchas[ip];
-  if (!verifcode || !rec || Date.now() > rec.expires || String(verifcode).toUpperCase() !== rec.code) {
-    return res.status(200).json({ code: 1001, message: '請輸入驗證碼' });
-  }
-
-  // 驗證碼正確後立即清除，防止重複使用
-  delete memoryStore.captchas[ip];
-
-  if (!username || !email || !password) {
-    return res.status(200).json({ code: 400, message: '用戶名、信箱和密碼為必填項目' });
-  }
-
-  try {
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    if (useMemoryStore) {
-      const existingUser = memoryStore.users.find(u => u.username === username || u.email === email);
-      if (existingUser) {
-        return res.status(200).json({ code: 1101, message: '用戶名或信箱已存在' });
-      }
-      const user = {
-        id: memoryStore.nextUserId++,
-        username,
-        email,
-        password_hash: hashedPassword,
-        status: 'active',
-        balance: 0,
-        created_at: new Date()
-      };
-      memoryStore.users.push(user);
-      const token = generateToken(user.id, user.username);
-      return res.json({
-        code: 200,
-        message: '註冊成功',
-        data: {
-          user: { id: user.id, username: user.username, email: user.email },
-          token,
-          auth: token
-        }
-      });
-    } else {
-      const r = await pool.query(
-        "INSERT INTO users(username, email, password_hash, metadata) VALUES($1, $2, $3, jsonb_build_object('kyc_status','none','google_bound', false)) RETURNING id, username, email",
-        [username, email, hashedPassword]
-      );
-      const user = r.rows[0];
-      const token = generateToken(user.id, user.username);
-      return res.json({
-        code: 200,
-        message: '註冊成功',
-        data: {
-          user: { id: user.id, username: user.username, email: user.email },
-          token,
-          auth: token
-        }
-      });
-    }
-  } catch (err) {
-    return res.status(200).json({ code: 500, message: '註冊失敗', error: err.message });
-  }
+// 業務相關 API
+app.post('/api/roles/v1/business/player/list', authenticateToken, (req, res) => {
+  res.json([
+    { id: 1, username: 'player001', level: 'VIP', balance: '5000.00', status: 'active' },
+    { id: 2, username: 'player002', level: 'Normal', balance: '1000.00', status: 'active' }
+  ]);
 });
 
-app.post('/api/auth/login', async (req, res) => {
-  const { username, password } = req.body;
-  
-  if (!username || !password) {
-    return res.status(400).json({ 
-      code: 400, 
-      message: '用戶名和密碼為必填項目' 
-    });
-  }
-
-  try {
-    let user;
-    
-    if (useMemoryStore) {
-      // 記憶體存儲模式
-      user = memoryStore.users.find(u => 
-        u.username === username || u.email === username
-      );
-      
-      if (!user) {
-        return res.status(401).json({ 
-          code: 401, 
-          message: '用戶名或密碼錯誤' 
-        });
-      }
-    } else {
-      // 數據庫模式
-      const r = await pool.query(
-        'SELECT id, username, email, password_hash, status FROM users WHERE username = $1 OR email = $1',
-        [username]
-      );
-      
-      if (!r.rows.length) {
-        return res.status(401).json({ 
-          code: 401, 
-          message: '用戶名或密碼錯誤' 
-        });
-      }
-      
-      user = r.rows[0];
-    }
-    
-    if (user.status !== 'active') {
-      return res.status(403).json({ 
-        code: 403, 
-        message: '帳戶已被暫停' 
-      });
-    }
-
-    const isValidPassword = await bcrypt.compare(password, user.password_hash);
-    
-    if (!isValidPassword) {
-      return res.status(401).json({ 
-        code: 401, 
-        message: '用戶名或密碼錯誤' 
-      });
-    }
-
-    const token = generateToken(user.id, user.username);
-    
-    res.json({
-      code: 200,
-      message: '登入成功',
-      data: {
-        user: { id: user.id, username: user.username, email: user.email },
-        token,
-        auth: token,
-        googlebind: false,
-        expired: false
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ 
-      code: 500, 
-      message: '登入失敗',
-      error: err.message 
-    });
-  }
-});
-
-// Admin 權限匹配（簡化回傳，避免登入後卡住）
-app.post('/api/authc/v1/security/matcher', authenticateToken, (req, res) => {
+app.post('/api/roles/v1/business/player/get', authenticateToken, (req, res) => {
+  const { id } = req.body || {};
   res.json({
-    code: 200,
-    data: { roles: ['admin'], perms: ['*'] }
+    id: id || 1,
+    username: 'player001',
+    level: 'VIP',
+    balance: '5000.00',
+    status: 'active',
+    created_at: '2024-01-01',
+    last_login: '2024-01-15'
   });
 });
 
-// G平台用户登录 - 无/api前缀
-app.post('/anon/v1/user/login', async (req, res) => {
-  const { username, password, verifcode, token } = req.body || {};
+// IPO 相關 API
+app.post('/api/roles/v1/ipo/list', authenticateToken, (req, res) => {
+  res.json([
+    { id: 1, symbol: 'TEST.IPO', name: '測試 IPO', price: '10.00', status: 'active', start_date: '2024-02-01' }
+  ]);
+});
 
-  // 验证图形验证码
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-  const rec = token ? memoryStore.captchasByToken[token] : memoryStore.captchas[ip];
-  if (!verifcode || !rec || Date.now() > rec.expires || String(verifcode).toUpperCase() !== rec.code) {
-    return res.status(200).json({ code: 1001, message: '请输入验证码' });
-  }
+app.post('/api/roles/v1/ipo/config/list', authenticateToken, (req, res) => {
+  res.json([
+    { id: 1, symbol: 'TEST.IPO', allocation_rate: '0.1', min_amount: '1000', max_amount: '100000' }
+  ]);
+});
+
+// 客服相關 API
+app.post('/api/roles/v1/service/user/list', authenticateToken, (req, res) => {
+  res.json([
+    { id: 1, username: 'user001', last_message: '需要幫助', unread_count: 2, status: 'online' },
+    { id: 2, username: 'user002', last_message: '交易問題', unread_count: 0, status: 'offline' }
+  ]);
+});
+
+app.post('/api/roles/v1/service/message/list', authenticateToken, (req, res) => {
+  const { user_id } = req.body || {};
+  res.json([
+    { id: 1, user_id: user_id || 1, content: '您好，有什麼可以幫助您的？', type: 'text', from: 'support', timestamp: Date.now() - 3600000 },
+    { id: 2, user_id: user_id || 1, content: '我需要幫助處理訂單', type: 'text', from: 'user', timestamp: Date.now() - 1800000 }
+  ]);
+});
+
+// C2C 匯率查詢
+app.post('/api/anon/v1/c2c/rate', (req, res) => {
+  const { crypto = 'USDT', currency = 'TWD' } = req.body || {};
   
-  // 验证码正确后立即清除
-  if (token) {
-    delete memoryStore.captchasByToken[token];
-  } else {
-    delete memoryStore.captchas[ip];
-  }
+  // 模擬匯率
+  const rate = 31.5 + (Math.random() - 0.5) * 1;
+  res.json({
+    code: 200,
+    data: {
+      crypto,
+      currency,
+      rate: rate.toFixed(2),
+      updated_at: new Date().toISOString()
+    }
+  });
+});
 
-  if (!username || !password) {
-    return res.status(200).json({ code: 400, message: '用户名和密码为必填项目' });
-  }
+// C2C 我的訂單
+app.post('/api/authc/v1/c2c/order/list', authenticateToken, (req, res) => {
+  const { status = 'all' } = req.body || {};
+  
+  // 模擬訂單列表
+  const orders = Array.from({ length: 5 }).map((_, i) => ({
+    id: `ORD${Date.now() - i * 86400000}`,
+    type: i % 2 === 0 ? 'buy' : 'sell',
+    crypto: 'USDT',
+    currency: 'TWD',
+    amount: 1000 + Math.random() * 10000,
+    price: 31.5 + Math.random() * 1,
+    status: ['pending', 'completed', 'cancelled'][i % 3],
+    created_at: new Date(Date.now() - i * 86400000).toISOString()
+  }));
+  
+  res.json({ code: 200, data: orders });
+});
 
-  try {
-    let user;
-    if (useMemoryStore) {
-      user = memoryStore.users.find(u => u.username === username || u.email === username);
-      if (!user) {
-        return res.status(200).json({ code: 404, message: '账号不存在' });
+// 用戶基本資訊（Admin 彈窗）
+app.post('/api/authc/v1/user/basic', authenticateToken, (req, res) => {
+  const { partyid } = req.body || {};
+  if (!partyid) return res.status(400).json({ code: 400, message: 'partyid不能為空' });
+  const demo = {
+    uid: 100001,
+    username: 'demo_user',
+    partyid,
+    role: 'user',
+    kyc: 0,
+    kyc_status: 'none',
+    father_username: 'root',
+    limit: '0',
+    lastlogin: new Date().toISOString().slice(0,19).replace('T',' '),
+    remarks: '演示用戶',
+    wallet: '1000.00',
+    status: 'active',
+    created: '2024-01-01 00:00:00'
+  };
+  return res.json({ code: 200, data: demo });
+});
+
+// 用戶資金資訊（Admin 彈窗）
+app.post('/api/authc/v1/user/funds', authenticateToken, (req, res) => {
+  const { partyid } = req.body || {};
+  if (!partyid) return res.status(400).json({ code: 400, message: 'partyid不能為空' });
+  const data = {
+    wallet: [
+      { currency: 'USDT', amount: 0 },
+      { currency: 'USD', amount: 0 },
+      { currency: 'BTC', amount: 0 },
+      { currency: 'ETH', amount: 0 }
+    ],
+    spot: [
+      { currency: 'USDT', amount: 0 },
+      { currency: 'BTC', amount: 0 }
+    ]
+  };
+  return res.json({ code: 200, data });
+});
+
+// roles（可能被前端誤寫為 rules）— 補齊大宗交易相關端點
+app.post('/api/roles/v1/blocktrade/para', (req, res) => {
+  res.json({ code: 200, data: { minAmount: 1, maxLeverage: 5 } });
+});
+app.post('/api/roles/v1/blocktrade/q/list', (req, res) => {
+  res.json({ code: 200, data: [] });
+});
+app.post('/api/roles/v1/blocktrade/m/sell', (req, res) => {
+  res.json({ code: 200, message: '下單成功' });
+});
+
+// 通用：Admin 端多數 /roles/v1/* 請求（demo 回傳空清單/成功訊息，繁中）
+app.all('/api/roles/v1/*', authenticateToken, async (req, res) => {
+  const p = req.path || '';
+  const ok = (data = {}) => res.json({ code: 200, data });
+  const okMsg = (message = '操作成功') => res.json({ code: 200, message });
+  // list 類
+  if (/\/roles\/v1\/sysuser\/list$/.test(p)) {
+    if (!useMemoryStore && pool) {
+      try {
+        const r = await pool.query('SELECT id, username, email, status FROM users ORDER BY id DESC LIMIT 200');
+        return ok(r.rows);
+      } catch (e) {
+        console.warn('sysuser/list DB error, fallback memory:', e.message);
       }
-      
-      const isValidPassword = await bcrypt.compare(password, user.password_hash);
-      if (!isValidPassword) {
-        return res.status(200).json({ code: 400, message: '密码错误' });
+    }
+    return ok(memoryStore.adminUsers.map(u => ({ id: u.id, username: u.username, email: u.email, status: u.status })));
+  }
+  if (/\/roles\/v1\/sysrole\/list$/.test(p)) {
+    // 預設給兩個角色
+    return ok([
+      { roleid: 1, rolename: '系統管理員', auths: 'dashboard,users,orders,finance,system', remarks: '擁有全部權限', preset: true },
+      { roleid: 2, rolename: '客服人員', auths: 'dashboard,service,users', remarks: '客服相關權限', preset: true }
+    ]);
+  }
+  // 金額異動（錢包日誌）
+  if (/\/roles\/v1\/walletlog\/list$/.test(p)) {
+    if (!useMemoryStore && pool) {
+      try {
+        const r = await pool.query(
+          'SELECT id, user_id, old_balance, new_balance, delta, reason, created_at FROM balance_logs ORDER BY id DESC LIMIT 200'
+        );
+        return ok(r.rows);
+      } catch (e) {
+        console.warn('walletlog/list DB error:', e.message);
       }
+    }
+    return ok([]);
+  }
+  // 用戶列表（客服/玩家列表共用）
+  if (/\/roles\/v1\/(user|support)\/list$/.test(p)) {
+    if (!useMemoryStore && pool) {
+      try {
+        const r = await pool.query('SELECT id, username, email, status, created_at FROM users ORDER BY id DESC LIMIT 200');
+        return ok(r.rows);
+      } catch (e) {
+        console.warn('user/support/list DB error:', e.message);
+      }
+    }
+    // 返回演示用戶數據 - 所有用戶都設為未上傳資料狀態
+    const demoUsers = [
+      { id: 1, username: 'demo_user', email: 'demo@example.com', partyid: 'DEMO001', role: 'user', kyc: 0, kyc_status: 'none', uid: '100001', father_username: 'root', limit: '0', lastlogin: '2024-01-15 10:30:00', remarks: '演示用戶', wallet: '1000.00', status: 'active', created_at: '2024-01-01 00:00:00' },
+      { id: 2, username: 'test_user', email: 'test@example.com', partyid: 'TEST001', role: 'user', kyc: 0, kyc_status: 'none', uid: '100002', father_username: 'root', limit: '0', lastlogin: '2024-01-15 11:30:00', remarks: '測試用戶', wallet: '500.00', status: 'active', created_at: '2024-01-01 00:00:00' },
+      { id: 3, username: 'guest_001', email: 'guest001@example.com', partyid: 'GUEST001', role: 'guest', kyc: 0, kyc_status: 'none', uid: '100003', father_username: 'root', limit: '0', lastlogin: '2024-01-15 12:30:00', remarks: '模擬用戶1', wallet: '10000.00', status: 'active', created_at: '2024-01-01 00:00:00' },
+      { id: 4, username: 'guest_002', email: 'guest002@example.com', partyid: 'GUEST002', role: 'guest', kyc: 0, kyc_status: 'none', uid: '100004', father_username: 'root', limit: '0', lastlogin: '2024-01-15 13:30:00', remarks: '模擬用戶2', wallet: '5000.00', status: 'active', created_at: '2024-01-01 00:00:00' }
+    ];
+    return ok(demoUsers);
+  }
+  // 代理列表與新增
+  if (/\/roles\/v1\/agent\/q\/list$/.test(p)) {
+    const list = memoryStore.agents || (memoryStore.agents = []);
+    return ok(list);
+  }
+  if (/\/roles\/v1\/agent\/m\/add$/.test(p)) {
+    const { username, email, phone, remarks } = req.body || {};
+    memoryStore.agents = memoryStore.agents || [];
+    const id = memoryStore.agents.length ? (memoryStore.agents[memoryStore.agents.length-1].id + 1) : 1;
+    const agent = { id, username: username || ('agent'+id), email: email||'', phone: phone||'', remarks: remarks||'', created_at: new Date().toISOString() };
+    memoryStore.agents.push(agent);
+    return okMsg('新增成功');
+  }
+  if (/\/roles\/v1\/agent\/m\/update$/.test(p)) return okMsg('更新成功');
+  if (/\/roles\/v1\/support\/user\/search$/.test(p)) {
+    const { keyword = '' } = req.body || {};
+    if (!useMemoryStore && pool) {
+      try {
+        const r = await pool.query(
+          `SELECT id, username, email, status, created_at FROM users
+           WHERE username ILIKE $1 OR email ILIKE $1
+           ORDER BY id DESC LIMIT 200`,
+          [`%${keyword}%`]
+        );
+        return ok(r.rows);
+      } catch (e) {
+        console.warn('support/user/search DB error:', e.message);
+      }
+    }
+    return ok([]);
+  }
+  // 客服訊息（簡化：回空/標記已讀/黑名單管理）
+  if (/\/roles\/v1\/support\/msg\/list$/.test(p)) return ok([]);
+  if (/\/roles\/v1\/support\/msg\/read$/.test(p)) return okMsg('已讀');
+  if (/\/roles\/v1\/support\/manage\/delmsg$/.test(p)) return okMsg('已刪除');
+  if (/\/roles\/v1\/support\/manage\/blacklist\/add$/.test(p)) { const { uid } = req.body||{}; if (uid) memoryStore.supportBlacklist.push(uid); return okMsg('已加入黑名單'); }
+  if (/\/roles\/v1\/support\/manage\/blacklist\/del$/.test(p)) { const { uid } = req.body||{}; memoryStore.supportBlacklist = memoryStore.supportBlacklist.filter(x=>x!==uid); return okMsg('已移除黑名單'); }
+  if (/\/roles\/v1\/support\/manage\/remarks$/.test(p)) return okMsg('已備註');
+  // 交易紀錄（訂單/成交）
+  if (/\/roles\/v1\/(stock|futures)\/q\/list$/.test(p) || /\/roles\/v1\/orders\/q\/list$/.test(p)) {
+    const { country, symbol } = req.body || {};
+    
+    // 複用股票數據結構
+    const stocksByCountry = {
+      us: [
+        { id: 1, symbol: 'AAPL', name: 'Apple Inc.', market: 'NASDAQ', country: 'us', enabled: 1 },
+        { id: 2, symbol: 'GOOGL', name: 'Alphabet Inc.', market: 'NASDAQ', country: 'us', enabled: 1 },
+        { id: 3, symbol: 'TSLA', name: 'Tesla Inc.', market: 'NASDAQ', country: 'us', enabled: 1 },
+        { id: 4, symbol: 'MSFT', name: 'Microsoft Corp.', market: 'NASDAQ', country: 'us', enabled: 1 },
+        { id: 5, symbol: 'AMZN', name: 'Amazon.com Inc.', market: 'NASDAQ', country: 'us', enabled: 1 },
+        { id: 6, symbol: 'NVDA', name: 'NVIDIA Corp.', market: 'NASDAQ', country: 'us', enabled: 1 },
+        { id: 7, symbol: 'META', name: 'Meta Platforms Inc.', market: 'NASDAQ', country: 'us', enabled: 1 },
+        { id: 8, symbol: 'JPM', name: 'JPMorgan Chase & Co.', market: 'NYSE', country: 'us', enabled: 1 }
+      ],
+      japan: [
+        { id: 9, symbol: '7203.T', name: 'Toyota Motor Corp.', market: 'TSE', country: 'japan', enabled: 1 },
+        { id: 10, symbol: '6758.T', name: 'Sony Group Corp.', market: 'TSE', country: 'japan', enabled: 1 },
+        { id: 11, symbol: '9984.T', name: 'SoftBank Group Corp.', market: 'TSE', country: 'japan', enabled: 1 },
+        { id: 12, symbol: '8306.T', name: 'Mitsubishi UFJ Financial Group', market: 'TSE', country: 'japan', enabled: 1 }
+      ],
+      china: [
+        { id: 13, symbol: '000001.SZ', name: '平安银行', market: 'SZSE', country: 'china', enabled: 1 },
+        { id: 14, symbol: '600519.SS', name: '贵州茅台', market: 'SSE', country: 'china', enabled: 1 },
+        { id: 15, symbol: '000858.SZ', name: '五粮液', market: 'SZSE', country: 'china', enabled: 1 },
+        { id: 16, symbol: '000002.SZ', name: '万科A', market: 'SZSE', country: 'china', enabled: 1 }
+      ],
+      hongkong: [
+        { id: 17, symbol: '0700.HK', name: '腾讯控股', market: 'HKEX', country: 'hongkong', enabled: 1 },
+        { id: 18, symbol: '9988.HK', name: '阿里巴巴-SW', market: 'HKEX', country: 'hongkong', enabled: 1 },
+        { id: 19, symbol: '0941.HK', name: '中国移动', market: 'HKEX', country: 'hongkong', enabled: 1 },
+        { id: 20, symbol: '0005.HK', name: '汇丰控股', market: 'HKEX', country: 'hongkong', enabled: 1 }
+      ],
+      taiwan: [
+        { id: 21, symbol: '2330.TW', name: '台积电', market: 'TWSE', country: 'taiwan', enabled: 1 },
+        { id: 22, symbol: '2317.TW', name: '鸿海', market: 'TWSE', country: 'taiwan', enabled: 1 },
+        { id: 23, symbol: '2454.TW', name: '联发科', market: 'TWSE', country: 'taiwan', enabled: 1 },
+        { id: 24, symbol: '2412.TW', name: '中华电', market: 'TWSE', country: 'taiwan', enabled: 1 }
+      ],
+      korea: [
+        { id: 25, symbol: '005930.KS', name: 'Samsung Electronics', market: 'KRX', country: 'korea', enabled: 1 },
+        { id: 26, symbol: '000660.KS', name: 'SK Hynix', market: 'KRX', country: 'korea', enabled: 1 },
+        { id: 27, symbol: '207940.KS', name: 'Samsung Biologics', market: 'KRX', country: 'korea', enabled: 1 }
+      ],
+      singapore: [
+        { id: 28, symbol: 'D05.SI', name: 'DBS Group Holdings', market: 'SGX', country: 'singapore', enabled: 1 },
+        { id: 29, symbol: 'O39.SI', name: 'OCBC Bank', market: 'SGX', country: 'singapore', enabled: 1 },
+        { id: 30, symbol: 'U11.SI', name: 'United Overseas Bank', market: 'SGX', country: 'singapore', enabled: 1 }
+      ],
+      malaysia: [
+        { id: 31, symbol: 'MAYBANK.KL', name: 'Malayan Banking Berhad', market: 'KLSE', country: 'malaysia', enabled: 1 },
+        { id: 32, symbol: 'CIMB.KL', name: 'CIMB Group Holdings', market: 'KLSE', country: 'malaysia', enabled: 1 }
+      ],
+      thailand: [
+        { id: 33, symbol: 'PTT.BK', name: 'PTT Public Company Limited', market: 'SET', country: 'thailand', enabled: 1 },
+        { id: 34, symbol: 'CPALL.BK', name: 'CP ALL Public Company Limited', market: 'SET', country: 'thailand', enabled: 1 }
+      ],
+      philippines: [
+        { id: 35, symbol: 'BDO.PS', name: 'BDO Unibank Inc.', market: 'PSE', country: 'philippines', enabled: 1 },
+        { id: 36, symbol: 'SM.PS', name: 'SM Investments Corporation', market: 'PSE', country: 'philippines', enabled: 1 }
+      ],
+      indonesia: [
+        { id: 37, symbol: 'BBCA.JK', name: 'Bank Central Asia Tbk PT', market: 'IDX', country: 'indonesia', enabled: 1 },
+        { id: 38, symbol: 'BBRI.JK', name: 'Bank Rakyat Indonesia Tbk PT', market: 'IDX', country: 'indonesia', enabled: 1 }
+      ],
+      vietnam: [
+        { id: 39, symbol: 'VCB.VN', name: 'Joint Stock Commercial Bank for Foreign Trade of Vietnam', market: 'HOSE', country: 'vietnam', enabled: 1 },
+        { id: 40, symbol: 'VIC.VN', name: 'Vingroup Joint Stock Company', market: 'HOSE', country: 'vietnam', enabled: 1 }
+      ],
+      india: [
+        { id: 41, symbol: 'RELIANCE.NS', name: 'Reliance Industries Limited', market: 'NSE', country: 'india', enabled: 1 },
+        { id: 42, symbol: 'TCS.NS', name: 'Tata Consultancy Services Limited', market: 'NSE', country: 'india', enabled: 1 }
+      ],
+      uk: [
+        { id: 43, symbol: 'LLOY.L', name: 'Lloyds Banking Group plc', market: 'LSE', country: 'uk', enabled: 1 },
+        { id: 44, symbol: 'HSBA.L', name: 'HSBC Holdings plc', market: 'LSE', country: 'uk', enabled: 1 }
+      ],
+      germany: [
+        { id: 45, symbol: 'SAP.DE', name: 'SAP SE', market: 'XETRA', country: 'germany', enabled: 1 },
+        { id: 46, symbol: 'SIE.DE', name: 'Siemens AG', market: 'XETRA', country: 'germany', enabled: 1 }
+      ],
+      australia: [
+        { id: 47, symbol: 'CBA.AX', name: 'Commonwealth Bank of Australia', market: 'ASX', country: 'australia', enabled: 1 },
+        { id: 48, symbol: 'BHP.AX', name: 'BHP Group Limited', market: 'ASX', country: 'australia', enabled: 1 }
+      ],
+      canada: [
+        { id: 49, symbol: 'SHOP.TO', name: 'Shopify Inc.', market: 'TSX', country: 'canada', enabled: 1 },
+        { id: 50, symbol: 'RY.TO', name: 'Royal Bank of Canada', market: 'TSX', country: 'canada', enabled: 1 }
+      ]
+    };
+    
+    // 合併或篩選股票
+    let allStocks = [];
+    if (country && country !== 'all' && stocksByCountry[country]) {
+      allStocks = stocksByCountry[country];
     } else {
-      const r = await pool.query(
-        'SELECT id, username, email, password_hash, status, balance FROM users WHERE username = $1 OR email = $1',
-        [username]
+      for (const countryKey in stocksByCountry) {
+        allStocks = allStocks.concat(stocksByCountry[countryKey]);
+      }
+    }
+    
+    // 根據股票代碼或名稱篩選
+    if (symbol) {
+      allStocks = allStocks.filter(stock => 
+        stock.symbol.toLowerCase().includes(symbol.toLowerCase()) ||
+        stock.name.toLowerCase().includes(symbol.toLowerCase())
       );
-      
-      if (!r.rows.length) {
-        return res.status(200).json({ code: 404, message: '账号不存在' });
-      }
-      
-      user = r.rows[0];
-      const isValidPassword = await bcrypt.compare(password, user.password_hash);
-      if (!isValidPassword) {
-        return res.status(200).json({ code: 400, message: '密码错误' });
-      }
     }
-
-    if (user.status !== 'active') {
-      return res.status(200).json({ code: 403, message: '账号已被禁用' });
-    }
-
-    const authToken = generateToken(user.id, user.username);
     
-    res.json({
-      code: 200,
-      message: '登录成功',
-      data: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        balance: user.balance || 0,
-        auth: authToken
-      }
-    });
-  } catch (err) {
-    res.status(500).json({
-      code: 500,
-      message: '登录失败',
-      error: err.message
-    });
+    return ok(allStocks);
   }
-});
-
-// 与前端对齐：匿名登入（需要图形验证码）- 带/api前缀
-app.post('/api/anon/v1/user/login', async (req, res) => {
-  const { username, password, verifcode } = req.body || {};
-
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-  const rec = memoryStore.captchas[ip];
-  if (!verifcode || !rec || Date.now() > rec.expires || String(verifcode).toUpperCase() !== rec.code) {
-    return res.status(200).json({ code: 1001, message: '請輸入驗證碼' });
+  if (/\/roles\/v1\/trades\/q\/list$/.test(p)) {
+    if (!useMemoryStore && pool) {
+      try {
+        const r = await pool.query(
+          'SELECT id, buy_order_id, sell_order_id, buyer_id, seller_id, symbol, price, amount, total, fee, created_at FROM trades ORDER BY id DESC LIMIT 200'
+        );
+        return ok(r.rows);
+      } catch (e) {
+        console.warn('trades/q/list DB error:', e.message);
+      }
+    }
+    return ok([]);
+  }
+  // 交易數據（簡化彙總）
+  if (/\/roles\/v1\/data\/global\/total$/.test(p)) {
+    if (!useMemoryStore && pool) {
+      try {
+        const [{ rows: u } , { rows: o }, { rows: t }] = await Promise.all([
+          pool.query('SELECT COUNT(*)::int AS users FROM users'),
+          pool.query('SELECT COUNT(*)::int AS orders FROM orders'),
+          pool.query('SELECT COUNT(*)::int AS trades FROM trades')
+        ]);
+        return ok({ users: u[0].users, orders: o[0].orders, trades: t[0].trades });
+      } catch (e) {
+        console.warn('data/global/total DB error:', e.message);
+      }
+    }
+    return ok({ users: 0, orders: 0, trades: 0 });
+  }
+  if (/\/roles\/v1\/data\/global\/date$/.test(p)) {
+    // 簡化：近7天空資料
+    const now = Date.now();
+    const data = Array.from({ length: 7 }).map((_,i)=>({ ts: now - (6-i)*86400000, users: 0, orders: 0, trades: 0 }));
+    return ok(data);
+  }
+  if (/\/roles\/v1\/data\/user\/list$/.test(p)) {
+    const { page = 1, size = 20, query = '', father = '' } = req.body || {};
+    if (!useMemoryStore && pool) {
+      try {
+        const r = await pool.query('SELECT id, username, email, status, created_at FROM users ORDER BY id DESC LIMIT $1 OFFSET $2', [size, (page-1)*size]);
+        const rows = r.rows.map((u,i) => ({
+          uid: u.id,
+          username: u.username,
+          partyid: 'UID' + String(u.id).padStart(6,'0'),
+          amount: '0', earn: '0', deposit: '0', withdraw: '0', balance: '0',
+          kyc: 0, status: u.status, lastlogin: u.created_at
+        }));
+        return ok(rows);
+      } catch (e) {
+        console.warn('data/user/list DB error:', e.message);
+      }
+    }
+    // demo 資料，補齊 partyid
+    const demoUsers = [
+      { uid: 100001, username: 'demo_user', partyid: 'DEMO001', amount: '0', earn: '0', deposit: '0', withdraw: '0', balance: '0', lastlogin: '2024-01-15 10:30:00' },
+      { uid: 100002, username: 'test_user', partyid: 'TEST001', amount: '0', earn: '0', deposit: '0', withdraw: '0', balance: '0', lastlogin: '2024-01-15 11:30:00' }
+    ];
+    return ok(demoUsers);
+  }
+  if (/\/roles\/v1\/data\/(user|my)\/currency$/.test(p)) {
+    return ok([{ currency: 'USDT', total: 0 }]);
+  }
+  if (/\/roles\/v1\/data\/(my)\/(total|list)$/.test(p)) {
+    return ok([]);
   }
   
-  // 驗證碼正確後立即清除，防止重複使用
-  delete memoryStore.captchas[ip];
-
-  if (!username || !password) {
-    return res.status(200).json({ code: 400, message: '用戶名和密碼為必填項目' });
-  }
-
-  try {
-    let user;
-    if (useMemoryStore) {
-      // 如果 users 陣列為空，初始化預設用戶
-      if (!memoryStore.users || memoryStore.users.length === 0) {
-        memoryStore.users = [
-          { 
-            id: 1, 
-            username: 'demo_user', 
-            email: 'demo@example.com', 
-            password_hash: '$2b$12$K8YQF.X2tX8QGY9XvFVQz.rBRZq1QG6Mz8KQF.X2tX8QGY9XvFVQz.', // 密碼：123456
-            partyid: 'DEMO001', 
-            role: 'user', 
-            kyc: 0, 
-            uid: '100001', 
-            father_username: 'root', 
-            limit: '0', 
-            lastlogin: '2024-01-15 10:30:00', 
-            remarks: '演示用戶', 
-            wallet: '1000.00',
-            status: 'active',
-            created_at: '2024-01-01 00:00:00'
-          },
-          { 
-            id: 2, 
-            username: 'test_user', 
-            email: 'test@example.com', 
-            password_hash: '$2b$12$K8YQF.X2tX8QGY9XvFVQz.rBRZq1QG6Mz8KQF.X2tX8QGY9XvFVQz.', // 密碼：123456
-            partyid: 'TEST001', 
-            role: 'user', 
-            kyc: 1, 
-            uid: '100002', 
-            father_username: 'root', 
-            limit: '0', 
-            lastlogin: '2024-01-15 11:30:00', 
-            remarks: '測試用戶', 
-            wallet: '500.00',
-            status: 'active',
-            created_at: '2024-01-01 00:00:00'
-          }
-        ];
-        memoryStore.nextUserId = 3;
-      }
-      
-      user = memoryStore.users.find(u => u.username === username || u.email === username);
-      if (!user) {
-        return res.status(200).json({ code: 401, message: '用戶名或密碼錯誤' });
-      }
-    } else {
-      const r = await pool.query(
-        'SELECT id, username, email, password_hash, status FROM users WHERE username = $1 OR email = $1',
-        [username]
-      );
-      if (!r.rows.length) {
-        return res.status(200).json({ code: 401, message: '用戶名或密碼錯誤' });
-      }
-      user = r.rows[0];
-    }
-
-    if (user.status !== 'active') {
-      return res.status(200).json({ code: 403, message: '帳戶已被暫停' });
-    }
-
-    const isValidPassword = await bcrypt.compare(password, user.password_hash);
-    if (!isValidPassword) {
-      return res.status(200).json({ code: 401, message: '用戶名或密碼錯誤' });
-    }
-
-    const token = generateToken(user.id, user.username);
-    return res.json({
-      code: 200,
-      message: '登入成功',
-      data: {
-        user: { id: user.id, username: user.username, email: user.email },
-        token,
-        auth: token
-      }
-    });
-  } catch (err) {
-    return res.status(200).json({ code: 500, message: '登入失敗', error: err.message });
-  }
-});
-
-// Token 驗證 API
-app.post('/api/auth/verify', authenticateToken, async (req, res) => {
-  try {
-    const user = await pool.query(
-      'SELECT id, username, email, status FROM users WHERE id = $1',
-      [req.user.userId]
-    );
-    
-    if (!user.rows.length) {
-      return res.status(404).json({ 
-        code: 404, 
-        message: '用戶不存在' 
-      });
-    }
-
-    res.json({
-      code: 200,
-      message: 'Token有效',
-      data: { user: user.rows[0] }
-    });
-  } catch (err) {
-    res.status(500).json({ 
-      code: 500, 
-      message: 'Token驗證失敗' 
-    });
-  }
-});
-
-// 查詢API (需要基本認證)
-app.get('/api/users', authenticateToken, async (req, res) => {
-  try {
-    const r = await pool.query('SELECT id, username, email, balance, status, created_at FROM users ORDER BY id DESC');
-    res.json({
-      code: 200,
-      data: r.rows
-    });
-  } catch (err) {
-    res.status(500).json({ 
-      code: 500, 
-      message: '查詢失敗',
-      error: err.message 
-    });
-  }
-});
-
-app.get('/api/users/:id', authenticateToken, async (req, res) => {
-  try {
-    const r = await pool.query('SELECT id, username, email, balance, status, created_at FROM users WHERE id = $1', [req.params.id]);
-    if (!r.rows.length) {
-      return res.status(404).json({ 
-        code: 404, 
-        message: '用戶不存在' 
-      });
-    }
-    res.json({
-      code: 200,
-      data: r.rows[0]
-    });
-  } catch (err) {
-    res.status(500).json({ 
-      code: 500, 
-      message: '查詢失敗',
-      error: err.message 
-    });
-  }
-});
-
-// 修改型API (強制認證)
-app.post('/api/users/:id/balance', requireAuth, async (req, res) => {
-  const id = req.params.id;
-  const { delta, reason } = req.body; // delta in cents, reason for audit
-  
-  // 驗證權限：只能修改自己的餘額或管理員權限
-  if (req.user.userId != id && req.user.role !== 'admin') {
-    return res.status(403).json({ 
-      code: 403, 
-      message: '無權限修改此用戶餘額' 
+  // 概覽頁面 API
+  if (/\/roles\/v1\/data\/global\/total$/.test(p)) {
+    // 返回平台總體數據
+    return ok({
+      deposit: '1,234,567.89',
+      withdraw: '987,654.32',
+      balance: '246,913.57'
     });
   }
   
-  if (!delta || typeof delta !== 'number') {
-    return res.status(400).json({ 
-      code: 400, 
-      message: '餘額變動值為必填且必須為數字' 
-    });
+  if (/\/roles\/v1\/data\/global\/total\/currency$/.test(p)) {
+    // 返回各幣種詳細數據
+    return ok([
+      { currency: 'USDT', deposit: '800000.00', withdraw: '600000.00', balance: '200000.00', deposit_usdt: '800000.00', withdraw_usdt: '600000.00', deposit_ratio: 65, withdraw_ratio: 60 },
+      { currency: 'BTC', deposit: '50.5', withdraw: '35.2', balance: '15.3', deposit_usdt: '300000.00', withdraw_usdt: '250000.00', deposit_ratio: 25, withdraw_ratio: 25 },
+      { currency: 'ETH', deposit: '200.8', withdraw: '180.5', balance: '20.3', deposit_usdt: '134567.89', withdraw_usdt: '137654.32', deposit_ratio: 10, withdraw_ratio: 15 }
+    ]);
   }
-
-  try {
-    await pool.query('BEGIN');
+  
+  // C2C 廣告管理
+  if (/\/roles\/v1\/c2c\/ad\/list$/.test(p)) {
+    const { page = 1, offset, crypto, currency } = req.body || {};
+    // 返回演示廣告數據
+    const ads = [
+      { id: 1, merchant_id: 1, merchant_name: 'Merchant_A', offset: 'buy', crypto: 'USDT', currency: 'CNY', price: 7.20, limitmin: 100, limitmax: 50000, status: 'active', created_at: '2024-01-15 10:00:00' },
+      { id: 2, merchant_id: 2, merchant_name: 'Merchant_B', offset: 'sell', crypto: 'USDT', currency: 'CNY', price: 7.25, limitmin: 200, limitmax: 100000, status: 'active', created_at: '2024-01-15 11:00:00' },
+      { id: 3, merchant_id: 1, merchant_name: 'Merchant_A', offset: 'buy', crypto: 'BTC', currency: 'CNY', price: 480000, limitmin: 1000, limitmax: 500000, status: 'active', created_at: '2024-01-15 12:00:00' }
+    ];
     
-    const cur = await pool.query('SELECT balance FROM users WHERE id=$1 FOR UPDATE', [id]);
-    if (!cur.rows.length) {
-      await pool.query('ROLLBACK');
-      return res.status(404).json({ 
-        code: 404, 
-        message: '用戶不存在' 
-      });
+    let filteredAds = ads;
+    if (offset && offset !== 'all') {
+      filteredAds = filteredAds.filter(ad => ad.offset === offset);
+    }
+    if (crypto && crypto !== 'all') {
+      filteredAds = filteredAds.filter(ad => ad.crypto === crypto);
     }
     
-    const currentBalance = BigInt(cur.rows[0].balance || 0);
-    const deltaAmount = BigInt(delta);
-    const newBalance = currentBalance + deltaAmount;
-    
-    // 防止餘額為負數
-    if (newBalance < 0) {
-      await pool.query('ROLLBACK');
-      return res.status(400).json({ 
-        code: 400, 
-        message: '餘額不足，無法執行此操作' 
-      });
-    }
-    
-    await pool.query('UPDATE users SET balance=$1, updated_at=now() WHERE id=$2', [newBalance.toString(), id]);
-    
-    // 記錄操作日誌 (audit log)
-    await pool.query(
-      'INSERT INTO balance_logs (user_id, operator_id, old_balance, new_balance, delta, reason, created_at) VALUES ($1, $2, $3, $4, $5, $6, now())',
-      [id, req.user.userId, currentBalance.toString(), newBalance.toString(), deltaAmount.toString(), reason || '餘額調整']
-    );
-    
-    await pool.query('COMMIT');
-    
-    const r2 = await pool.query('SELECT id, username, balance FROM users WHERE id=$1', [id]);
-    const user = r2.rows[0];
-    
-    io.emit('user:balance:updated', { 
-      userId: user.id, 
-      username: user.username, 
-      balance: user.balance,
-      operator: req.user.username 
-    });
-    
-    res.json({
-      code: 200,
-      message: '餘額更新成功',
-      data: user
-    });
-  } catch (err) {
-    await pool.query('ROLLBACK');
-    res.status(500).json({ 
-      code: 500, 
-      message: '餘額更新失敗',
-      error: err.message 
+    return ok({
+      list: filteredAds,
+      total: filteredAds.length
     });
   }
+  
+  // 其他未匹配的 roles API 返回空數據
+  return ok({});
 });
 
 // 下單API (強制認證)
@@ -1773,12 +2550,27 @@ app.delete('/api/orders/:orderId', requireAuth, async (req, res) => {
 });
 
 // 前端期望的缺失 API 端點
-// 錢包與資產相關端點（demo）
+// 錢包與資產相關端點（demo） - 使用真實價格數據
 app.post('/api/anon/v1/wallet/currency', (req, res) => {
+  const btcData = cryptoPriceCache['BTCUSDT'] || { price: 43500, change24h: 0 };
+  const ethData = cryptoPriceCache['ETHUSDT'] || { price: 2300, change24h: 0 };
+  const bnbData = cryptoPriceCache['BNBUSDT'] || { price: 320, change24h: 0 };
+  const solData = cryptoPriceCache['SOLUSDT'] || { price: 98, change24h: 0 };
+  const xrpData = cryptoPriceCache['XRPUSDT'] || { price: 0.52, change24h: 0 };
+  const adaData = cryptoPriceCache['ADAUSDT'] || { price: 0.38, change24h: 0 };
+  const dogeData = cryptoPriceCache['DOGEUSDT'] || { price: 0.088, change24h: 0 };
+  const maticData = cryptoPriceCache['MATICUSDT'] || { price: 0.75, change24h: 0 };
+  
   res.json({ code: 200, data: [
-    { id: 1, symbol: 'USDT', name: 'Tether USD' },
-    { id: 2, symbol: 'BTC', name: 'Bitcoin' },
-    { id: 3, symbol: 'ETH', name: 'Ethereum' }
+    { id: 1, symbol: 'USDT', name: 'Tether USD', price: 1, change24h: 0 },
+    { id: 2, symbol: 'BTC', name: 'Bitcoin', price: btcData.price, change24h: btcData.change24h },
+    { id: 3, symbol: 'ETH', name: 'Ethereum', price: ethData.price, change24h: ethData.change24h },
+    { id: 4, symbol: 'BNB', name: 'BNB', price: bnbData.price, change24h: bnbData.change24h },
+    { id: 5, symbol: 'SOL', name: 'Solana', price: solData.price, change24h: solData.change24h },
+    { id: 6, symbol: 'XRP', name: 'Ripple', price: xrpData.price, change24h: xrpData.change24h },
+    { id: 7, symbol: 'ADA', name: 'Cardano', price: adaData.price, change24h: adaData.change24h },
+    { id: 8, symbol: 'DOGE', name: 'Dogecoin', price: dogeData.price, change24h: dogeData.change24h },
+    { id: 9, symbol: 'MATIC', name: 'Polygon', price: maticData.price, change24h: maticData.change24h }
   ]});
 });
 // 受保護別名：/api/authc/v1/wallet/currency
@@ -1828,22 +2620,179 @@ app.post('/api/authc/v1/user/get', authenticateToken, (req, res) => {
 app.post('/api/authc/v22/contract/list', authenticateToken, (req, res) => {
   res.json({ code: 200, data: [] });
 });
-// 时时彩（shishicai）
+// 时时彩（shishicai）- 增強版本
+// 全局存儲當前期號和結果
+let currentLotteryData = {
+  currentIssue: Date.now().toString().slice(-8),
+  nextIssue: (Date.now() + 300000).toString().slice(-8),
+  currentNumbers: null, // 當前期結果（null表示未開獎）
+  nextNumbers: generateLotteryNumbers(), // 下期結果（管理員可見）
+  history: [] // 歷史記錄
+};
+
+// 生成隨機彩票號碼
+function generateLotteryNumbers() {
+  return Array.from({ length: 5 }, () => Math.floor(Math.random() * 10).toString());
+}
+
+// 每5分鐘自動開獎
+setInterval(() => {
+  // 當前期變成已開獎
+  currentLotteryData.currentNumbers = currentLotteryData.nextNumbers;
+  currentLotteryData.history.unshift({
+    issue: currentLotteryData.currentIssue,
+    numbers: currentLotteryData.currentNumbers,
+    openTime: new Date().toISOString()
+  });
+  // 保留最近100期
+  if (currentLotteryData.history.length > 100) {
+    currentLotteryData.history = currentLotteryData.history.slice(0, 100);
+  }
+  
+  // 準備下期
+  currentLotteryData.currentIssue = currentLotteryData.nextIssue;
+  currentLotteryData.nextIssue = (Date.now() + 300000).toString().slice(-8);
+  currentLotteryData.nextNumbers = generateLotteryNumbers();
+  currentLotteryData.currentNumbers = null;
+  
+  console.log(`🎲 彩票開獎 - 期號: ${currentLotteryData.history[0].issue}, 結果: ${currentLotteryData.history[0].numbers.join(',')}`);
+}, 5 * 60 * 1000); // 5分鐘
+
 app.post('/api/anon/v24/item/shishicai', (req, res) => {
-  res.json({ code: 200, data: [] });
+  res.json({ 
+    code: 200, 
+    data: [{
+      id: 1,
+      name: '時時彩',
+      type: 'lottery',
+      interval: 300, // 5分鐘一期
+      enabled: true
+    }]
+  });
 });
+
 app.post('/api/anon/v24/shishicai/time', (req, res) => {
   const now = Date.now();
-  res.json({ code: 200, data: [
-    { issue: 'T1', start: now - 600000, end: now - 300000 },
-    { issue: 'T2', start: now - 300000, end: now }
-  ]});
+  const currentStart = now - (now % 300000);
+  const nextStart = currentStart + 300000;
+  
+  res.json({ 
+    code: 200, 
+    data: {
+      current: {
+        issue: currentLotteryData.currentIssue,
+        start: currentStart,
+        end: nextStart,
+        remainingSeconds: Math.floor((nextStart - now) / 1000)
+      },
+      next: {
+        issue: currentLotteryData.nextIssue,
+        start: nextStart,
+        end: nextStart + 300000
+      },
+      history: currentLotteryData.history.slice(0, 10) // 最近10期
+    }
+  });
 });
+
+// 前台查看當前結果（只能看已開獎的）
 app.post('/api/anon/v24/shishicai/number', (req, res) => {
-  res.json({ code: 200, data: ['1','2','3','4','5'] });
+  res.json({ 
+    code: 200, 
+    data: {
+      currentIssue: currentLotteryData.currentIssue,
+      numbers: currentLotteryData.currentNumbers, // null表示未開獎
+      history: currentLotteryData.history.slice(0, 20) // 最近20期歷史
+    }
+  });
 });
+
+// 管理員專用：提前查看下期結果
+app.post('/api/roles/v1/lottery/admin/preview', authenticateToken, (req, res) => {
+  // 驗證管理員權限（簡化版本，實際應該檢查用戶角色）
+  const token = req.headers.auth || req.headers.authorization?.replace('Bearer ', '');
+  
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    // 檢查是否為管理員（這裡簡化為檢查用戶名）
+    if (decoded.username !== 'admin') {
+      return res.status(403).json({
+        code: 403,
+        message: '權限不足：僅管理員可查看'
+      });
+    }
+    
+    res.json({
+      code: 200,
+      message: '管理員預覽',
+      data: {
+        current: {
+          issue: currentLotteryData.currentIssue,
+          numbers: currentLotteryData.currentNumbers,
+          status: currentLotteryData.currentNumbers ? '已開獎' : '未開獎'
+        },
+        next: {
+          issue: currentLotteryData.nextIssue,
+          numbers: currentLotteryData.nextNumbers, // ⚠️ 管理員可見下期結果
+          status: '未開獎（管理員預覽）'
+        },
+        history: currentLotteryData.history.slice(0, 50)
+      }
+    });
+  } catch (error) {
+    res.status(401).json({
+      code: 401,
+      message: '認證失敗'
+    });
+  }
+});
+
+// 管理員手動控制結果
+app.post('/api/roles/v1/lottery/admin/setResult', authenticateToken, async (req, res) => {
+  const { issue, numbers } = req.body || {};
+  const token = req.headers.auth || req.headers.authorization?.replace('Bearer ', '');
+  
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (decoded.username !== 'admin') {
+      return res.status(403).json({
+        code: 403,
+        message: '權限不足：僅管理員可設置'
+      });
+    }
+    
+    // 驗證數字格式
+    if (!numbers || !Array.isArray(numbers) || numbers.length !== 5) {
+      return res.status(400).json({
+        code: 400,
+        message: '數字格式錯誤：需要5個數字的數組'
+      });
+    }
+    
+    // 更新下期結果
+    currentLotteryData.nextNumbers = numbers.map(n => n.toString());
+    
+    res.json({
+      code: 200,
+      message: '下期結果已設置',
+      data: {
+        issue: currentLotteryData.nextIssue,
+        numbers: currentLotteryData.nextNumbers
+      }
+    });
+  } catch (error) {
+    res.status(401).json({
+      code: 401,
+      message: '認證失敗'
+    });
+  }
+});
+
 app.post('/api/authc/v24/shishicai/list', authenticateToken, (req, res) => {
-  res.json({ code: 200, data: [] });
+  res.json({ 
+    code: 200, 
+    data: currentLotteryData.history.slice(0, 50) // 用戶的投注歷史（這裡模擬為空）
+  });
 });
 // AI 量化
 app.post('/api/anon/v2/item/aiquant', (req, res) => {
@@ -1956,7 +2905,17 @@ app.post('/api/anon/v1/support/list', (req, res) => {
 app.post('/api/anon/v1/notice/list', (req, res) => {
   res.json({
     code: 200,
-    data: []
+    data: [
+      {
+        id: 1,
+        title: '平台公告',
+        content: 'SunExDmoe交易所好康享不完！ 詳情請洽客服人員',
+        type: 'marquee',
+        priority: 1,
+        status: 'active',
+        created_at: new Date().toISOString()
+      }
+    ]
   });
 });
 app.post('/api/authc/v1/notice/joinlist', authenticateToken, (req, res) => {
@@ -1985,7 +2944,20 @@ app.get('/api/anon/v1/comm/token', (req, res) => {
 
 // 公告列表（GET）
 app.get('/api/anon/v1/notice/list', (req, res) => {
-  res.json({ code: 200, data: [] });
+  res.json({ 
+    code: 200, 
+    data: [
+      {
+        id: 1,
+        title: '平台公告',
+        content: 'SunExDmoe交易所好康享不完！ 詳情請洽客服人員',
+        type: 'marquee',
+        priority: 1,
+        status: 'active',
+        created_at: new Date().toISOString()
+      }
+    ]
+  });
 });
 
 // 客服支援列表（GET）
@@ -1993,12 +2965,27 @@ app.get('/api/anon/v1/support/list', (req, res) => {
   res.json({ code: 200, data: [] });
 });
 
-// 錢包幣別（GET）
+// 錢包幣別（GET） - 使用真實價格數據
 app.get('/api/anon/v1/wallet/currency', (req, res) => {
+  const btcData = cryptoPriceCache['BTCUSDT'] || { price: 43500, change24h: 0 };
+  const ethData = cryptoPriceCache['ETHUSDT'] || { price: 2300, change24h: 0 };
+  const bnbData = cryptoPriceCache['BNBUSDT'] || { price: 320, change24h: 0 };
+  const solData = cryptoPriceCache['SOLUSDT'] || { price: 98, change24h: 0 };
+  const xrpData = cryptoPriceCache['XRPUSDT'] || { price: 0.52, change24h: 0 };
+  const adaData = cryptoPriceCache['ADAUSDT'] || { price: 0.38, change24h: 0 };
+  const dogeData = cryptoPriceCache['DOGEUSDT'] || { price: 0.088, change24h: 0 };
+  const maticData = cryptoPriceCache['MATICUSDT'] || { price: 0.75, change24h: 0 };
+  
   res.json({ code: 200, data: [
-    { id: 1, symbol: 'USDT', name: 'Tether USD', icon: 'usdt.svg' },
-    { id: 2, symbol: 'BTC', name: 'Bitcoin', icon: 'btc.svg' },
-    { id: 3, symbol: 'ETH', name: 'Ethereum', icon: 'eth.svg' }
+    { id: 1, symbol: 'USDT', name: 'Tether USD', icon: 'usdt.svg', price: 1, change24h: 0 },
+    { id: 2, symbol: 'BTC', name: 'Bitcoin', icon: 'btc.svg', price: btcData.price, change24h: btcData.change24h },
+    { id: 3, symbol: 'ETH', name: 'Ethereum', icon: 'eth.svg', price: ethData.price, change24h: ethData.change24h },
+    { id: 4, symbol: 'BNB', name: 'BNB', icon: 'bnb.svg', price: bnbData.price, change24h: bnbData.change24h },
+    { id: 5, symbol: 'SOL', name: 'Solana', icon: 'sol.svg', price: solData.price, change24h: solData.change24h },
+    { id: 6, symbol: 'XRP', name: 'Ripple', icon: 'xrp.svg', price: xrpData.price, change24h: xrpData.change24h },
+    { id: 7, symbol: 'ADA', name: 'Cardano', icon: 'ada.svg', price: adaData.price, change24h: adaData.change24h },
+    { id: 8, symbol: 'DOGE', name: 'Dogecoin', icon: 'doge.svg', price: dogeData.price, change24h: dogeData.change24h },
+    { id: 9, symbol: 'MATIC', name: 'Polygon', icon: 'matic.svg', price: maticData.price, change24h: maticData.change24h }
   ]});
 });
 
@@ -2099,6 +3086,455 @@ app.post('/api/authc/v1/user/emailbind', (req, res) => {
     return res.status(200).json({ code: 400, message: '驗證碼錯誤' });
   }
   return res.json({ code: 200, message: '綁定成功' });
+});
+
+// ==================== Web3 錢包登入 API ====================
+
+// 獲取 Web3 Nonce
+app.post('/api/anon/v1/web3/nonce', async (req, res) => {
+  const { walletAddress } = req.body;
+  
+  if (!walletAddress) {
+    return res.json({
+      code: 400,
+      message: '缺少錢包地址參數'
+    });
+  }
+
+  const address = walletAddress.toLowerCase();
+  const nonce = generateWeb3Nonce();
+  const timestamp = Date.now();
+  
+  web3NonceCache.set(address, {
+    nonce,
+    timestamp,
+    expiresIn: 15 * 60 * 1000
+  });
+
+  console.log(`✅ 為地址 ${address} 生成 Nonce: ${nonce}`);
+
+  res.json({
+    code: 200,
+    data: {
+      nonce,
+      timestamp,
+      message: '請使用您的錢包簽名此消息'
+    }
+  });
+});
+
+// Web3 錢包登入
+app.post('/api/anon/v1/web3/login', async (req, res) => {
+  const { walletAddress, signature, nonce } = req.body;
+
+  if (!walletAddress || !signature || !nonce) {
+    return res.json({
+      code: 400,
+      message: '參數不完整'
+    });
+  }
+
+  const address = walletAddress.toLowerCase();
+
+  try {
+    const storedNonce = web3NonceCache.get(address);
+    
+    if (!storedNonce) {
+      return res.json({
+        code: 400,
+        message: 'Nonce 不存在或已過期，請重新獲取'
+      });
+    }
+
+    if (storedNonce.nonce !== nonce) {
+      return res.json({
+        code: 400,
+        message: 'Nonce 不匹配'
+      });
+    }
+
+    if (Date.now() - storedNonce.timestamp > storedNonce.expiresIn) {
+      web3NonceCache.delete(address);
+      return res.json({
+        code: 400,
+        message: 'Nonce 已過期，請重新獲取'
+      });
+    }
+
+    const message = `歡迎登入 SunExDmoe 娛樂城！\n\n請簽名以驗證您的身份。\n\n錢包地址: ${walletAddress}\nNonce: ${nonce}\n\n此操作不會產生任何費用。`;
+    
+    let recoveredAddress;
+    try {
+      recoveredAddress = ethers.utils.verifyMessage(message, signature);
+    } catch (err) {
+      console.error('簽名驗證錯誤:', err);
+      return res.json({
+        code: 400,
+        message: '簽名格式錯誤'
+      });
+    }
+
+    if (recoveredAddress.toLowerCase() !== address) {
+      return res.json({
+        code: 400,
+        message: '簽名驗證失敗'
+      });
+    }
+
+    console.log(`✅ 簽名驗證成功: ${address}`);
+    web3NonceCache.delete(address);
+
+    let user = await pool.query(
+      'SELECT * FROM users WHERE wallet_address = $1',
+      [address]
+    );
+
+    if (user.rows.length === 0) {
+      const username = `wallet_${address.slice(2, 10)}`;
+      const email = `${address.slice(2, 10)}@web3.user`;
+      const hashedPassword = await bcrypt.hash(address, 10);
+      
+      const insertResult = await pool.query(
+        `INSERT INTO users (username, email, password, wallet_address, balance, created_at) 
+         VALUES ($1, $2, $3, $4, $5, NOW()) 
+         RETURNING *`,
+        [username, email, hashedPassword, address, '10000']
+      );
+      
+      user = insertResult;
+      console.log(`🆕 創建新 Web3 用戶: ${username}`);
+    }
+
+    const userData = user.rows[0];
+    const token = generateToken(userData.id, userData.username);
+
+    res.json({
+      code: 200,
+      message: 'Web3 登入成功',
+      data: {
+        auth: token,
+        id: userData.id,
+        username: userData.username,
+        email: userData.email,
+        balance: userData.balance,
+        wallet_address: userData.wallet_address,
+        loginType: 'web3'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Web3 登入失敗:', error);
+    res.json({
+      code: 500,
+      message: 'Web3 登入失敗: ' + error.message
+    });
+  }
+});
+
+// 綁定錢包
+app.post('/api/authc/v1/user/bind-wallet', requireAuth, async (req, res) => {
+  const { walletAddress, signature, nonce } = req.body;
+  const userId = req.user.userId;
+
+  if (!walletAddress || !signature || !nonce) {
+    return res.json({
+      code: 400,
+      message: '參數不完整'
+    });
+  }
+
+  const address = walletAddress.toLowerCase();
+
+  try {
+    const storedNonce = web3NonceCache.get(address);
+    
+    if (!storedNonce || storedNonce.nonce !== nonce) {
+      return res.json({
+        code: 400,
+        message: 'Nonce 無效'
+      });
+    }
+
+    const message = `綁定錢包地址到 SunExDmoe 帳號\n\n錢包地址: ${walletAddress}\nNonce: ${nonce}`;
+    const recoveredAddress = ethers.utils.verifyMessage(message, signature);
+
+    if (recoveredAddress.toLowerCase() !== address) {
+      return res.json({
+        code: 400,
+        message: '簽名驗證失敗'
+      });
+    }
+
+    const existing = await pool.query(
+      'SELECT id FROM users WHERE wallet_address = $1 AND id != $2',
+      [address, userId]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.json({
+        code: 400,
+        message: '此錢包地址已被其他帳號綁定'
+      });
+    }
+
+    await pool.query(
+      'UPDATE users SET wallet_address = $1 WHERE id = $2',
+      [address, userId]
+    );
+
+    web3NonceCache.delete(address);
+    console.log(`✅ 用戶 ${userId} 已綁定錢包: ${address}`);
+
+    res.json({
+      code: 200,
+      message: '錢包綁定成功',
+      data: { walletAddress: address }
+    });
+
+  } catch (error) {
+    console.error('綁定錢包失敗:', error);
+    res.json({
+      code: 500,
+      message: '綁定錢包失敗: ' + error.message
+    });
+  }
+});
+
+// 解綁錢包
+app.post('/api/authc/v1/user/unbind-wallet', requireAuth, async (req, res) => {
+  const userId = req.user.userId;
+
+  try {
+    await pool.query(
+      'UPDATE users SET wallet_address = NULL WHERE id = $1',
+      [userId]
+    );
+
+    console.log(`✅ 用戶 ${userId} 已解綁錢包`);
+
+    res.json({
+      code: 200,
+      message: '錢包解綁成功'
+    });
+  } catch (error) {
+    console.error('解綁錢包失敗:', error);
+    res.json({
+      code: 500,
+      message: '解綁錢包失敗: ' + error.message
+    });
+  }
+});
+
+// ==================== 儲值錢包管理 API ====================
+
+// 綁定儲值錢包地址
+app.post('/api/authc/v1/system/bind-deposit-wallet', requireAuth, async (req, res) => {
+  const { walletAddress, walletType, chainId, isActive } = req.body;
+  
+  if (!walletAddress || !walletType) {
+    return res.json({
+      code: 400,
+      message: '參數不完整'
+    });
+  }
+
+  const address = walletAddress.toLowerCase();
+
+  try {
+    const existing = await pool.query(
+      'SELECT id FROM deposit_wallets WHERE wallet_address = $1',
+      [address]
+    );
+
+    if (existing.rows.length > 0) {
+      await pool.query(
+        `UPDATE deposit_wallets 
+         SET wallet_type = $1, chain_id = $2, is_active = $3, updated_at = NOW()
+         WHERE wallet_address = $4`,
+        [walletType, chainId || 1, isActive !== false, address]
+      );
+
+      console.log(`✅ 更新儲值錢包: ${address}`);
+
+      res.json({
+        code: 200,
+        message: '儲值錢包更新成功',
+        data: { walletAddress: address, walletType, chainId, isActive }
+      });
+    } else {
+      await pool.query(
+        `INSERT INTO deposit_wallets (wallet_address, wallet_type, chain_id, is_active, created_at)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        [address, walletType, chainId || 1, isActive !== false]
+      );
+
+      console.log(`🆕 添加儲值錢包: ${address}`);
+
+      res.json({
+        code: 200,
+        message: '儲值錢包添加成功',
+        data: { walletAddress: address, walletType, chainId, isActive }
+      });
+    }
+
+  } catch (error) {
+    console.error('綁定儲值錢包失敗:', error);
+    res.json({
+      code: 500,
+      message: '綁定儲值錢包失敗: ' + error.message
+    });
+  }
+});
+
+// 獲取所有儲值錢包
+app.post('/api/authc/v1/system/deposit-wallets', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, wallet_address, wallet_type, chain_id, is_active, created_at, updated_at
+       FROM deposit_wallets
+       ORDER BY created_at DESC`
+    );
+
+    res.json({
+      code: 200,
+      data: result.rows
+    });
+
+  } catch (error) {
+    console.error('獲取儲值錢包失敗:', error);
+    res.json({
+      code: 500,
+      message: '獲取儲值錢包失敗: ' + error.message
+    });
+  }
+});
+
+// 刪除儲值錢包
+app.post('/api/authc/v1/system/delete-deposit-wallet', requireAuth, async (req, res) => {
+  const { walletAddress } = req.body;
+
+  try {
+    await pool.query(
+      'DELETE FROM deposit_wallets WHERE wallet_address = $1',
+      [walletAddress.toLowerCase()]
+    );
+
+    console.log(`🗑️  刪除儲值錢包: ${walletAddress}`);
+
+    res.json({
+      code: 200,
+      message: '儲值錢包刪除成功'
+    });
+
+  } catch (error) {
+    console.error('刪除儲值錢包失敗:', error);
+    res.json({
+      code: 500,
+      message: '刪除儲值錢包失敗: ' + error.message
+    });
+  }
+});
+
+// 驗證儲值交易
+app.post('/api/anon/v1/deposit/verify', async (req, res) => {
+  const { txHash, fromAddress, toAddress, amount, chainId } = req.body;
+
+  try {
+    const wallet = await pool.query(
+      'SELECT * FROM deposit_wallets WHERE wallet_address = $1 AND chain_id = $2 AND is_active = true',
+      [toAddress.toLowerCase(), chainId]
+    );
+
+    if (wallet.rows.length === 0) {
+      return res.json({
+        code: 400,
+        message: '無效的儲值地址'
+      });
+    }
+
+    const existingTx = await pool.query(
+      'SELECT id FROM deposit_transactions WHERE tx_hash = $1',
+      [txHash.toLowerCase()]
+    );
+
+    if (existingTx.rows.length > 0) {
+      return res.json({
+        code: 400,
+        message: '交易已處理'
+      });
+    }
+
+    const user = await pool.query(
+      'SELECT id, username, balance FROM users WHERE wallet_address = $1',
+      [fromAddress.toLowerCase()]
+    );
+
+    if (user.rows.length === 0) {
+      return res.json({
+        code: 404,
+        message: '用戶不存在'
+      });
+    }
+
+    const userData = user.rows[0];
+    const userId = userData.id;
+    const currentBalance = parseFloat(userData.balance) || 0;
+    const depositAmount = parseFloat(amount);
+    const newBalance = currentBalance + depositAmount;
+
+    await pool.query('BEGIN');
+
+    await pool.query(
+      `INSERT INTO deposit_transactions 
+       (tx_hash, from_address, to_address, amount, chain_id, user_id, status, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+      [txHash.toLowerCase(), fromAddress.toLowerCase(), toAddress.toLowerCase(), 
+       depositAmount, chainId, userId, 'confirmed']
+    );
+
+    await pool.query(
+      'UPDATE users SET balance = $1 WHERE id = $2',
+      [newBalance.toString(), userId]
+    );
+
+    await pool.query(
+      `INSERT INTO balance_logs 
+       (user_id, operator_id, previous_balance, new_balance, amount, reason, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [userId, 0, currentBalance.toString(), newBalance.toString(), 
+       depositAmount.toString(), `鏈上儲值 (TxHash: ${txHash})`]
+    );
+
+    await pool.query('COMMIT');
+
+    console.log(`💰 儲值成功: 用戶 ${userId} 充值 ${depositAmount} USDT`);
+
+    io.to(`user_${userId}`).emit('deposit:success', {
+      amount: depositAmount,
+      newBalance: newBalance,
+      txHash: txHash
+    });
+
+    res.json({
+      code: 200,
+      message: '儲值成功',
+      data: {
+        userId,
+        username: userData.username,
+        amount: depositAmount,
+        newBalance: newBalance,
+        txHash: txHash
+      }
+    });
+
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    console.error('驗證儲值交易失敗:', error);
+    res.json({
+      code: 500,
+      message: '驗證儲值交易失敗: ' + error.message
+    });
+  }
 });
 
 // K 線歷史資料
@@ -4270,7 +5706,7 @@ adminNamespace.on('connection', (socket) => {
   sendMockData();
   
   // 每10秒發送一次更新
-  const interval = setInterval(sendMockData, 10000);
+  const interval = setInterval(sendMockData, 1000);
   
   socket.on('disconnect', () => {
     console.log('Admin main client disconnected:', socket.id);

@@ -1,0 +1,84 @@
+﻿<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>私人倉庫 | AmpliFyx</title>
+    <link rel="stylesheet" href="repository.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <div id="loginPanel" class="panel">
+            <div class="login-container">
+                <h1><i class="fas fa-archive"></i> 私人倉庫</h1>
+                <form id="loginForm">
+                    <div class="input-group">
+                        <i class="fas fa-user"></i>
+                        <input type="text" id="username" placeholder="用戶名" required>
+                    </div>
+                    <div class="input-group">
+                        <i class="fas fa-lock"></i>
+                        <input type="password" id="password" placeholder="密碼" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">登入</button>
+                </form>
+            </div>
+        </div>
+        <div id="mainPanel" class="panel hidden">
+            <nav class="navbar">
+                <div class="nav-brand">
+                    <i class="fas fa-archive"></i> 私人倉庫
+                </div>
+                <div class="nav-actions">
+                    <span id="welcomeUser"></span>
+                    <button id="logoutBtn" class="btn">登出</button>
+                </div>
+            </nav>
+            <div class="toolbar">
+                <div class="category-tabs">
+                    <button class="tab-btn active" data-category="all">全部</button>
+                    <button class="tab-btn" data-category="web">網頁</button>
+                    <button class="tab-btn" data-category="app">應用</button>
+                    <button class="tab-btn" data-category="image">映像</button>
+                    <button class="tab-btn" data-category="mobile">移動</button>
+                    <button class="tab-btn" data-category="note">記事</button>
+                    <button class="tab-btn" data-category="privacy">隱私</button>
+                </div>
+                <div class="toolbar-right">
+                    <input type="text" id="searchInput" placeholder="搜尋檔案...">
+                    <button id="uploadBtn" class="btn btn-primary">上傳</button>
+                </div>
+            </div>
+            <div id="fileGrid" class="file-grid"></div>
+        </div>
+        <div id="uploadModal" class="modal hidden">
+            <div class="modal-content">
+                <h3>上傳檔案</h3>
+                <form id="uploadForm">
+                    <select id="uploadCategory" required>
+                        <option value="web">網頁</option>
+                        <option value="app">應用</option>
+                        <option value="image">映像</option>
+                        <option value="mobile">移動</option>
+                        <option value="note">記事</option>
+                        <option value="privacy">隱私</option>
+                    </select>
+                    <input type="file" id="mainFile" name="file" required>
+                    <input type="file" id="thumbFile" name="thumb" accept="image/*">
+                    <input type="text" id="uploadTitle" placeholder="標題">
+                    <textarea id="uploadDescription" placeholder="描述"></textarea>
+                    <div id="privacyFields" class="hidden">
+                        <input type="url" id="uploadUrl" placeholder="網址">
+                        <input type="text" id="uploadAccount" placeholder="帳號">
+                        <input type="password" id="uploadPassword" placeholder="密碼">
+                    </div>
+                    <button type="submit">上傳</button>
+                    <button type="button" onclick="closeUploadModal()">取消</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <script src="repository.js"></script>
+</body>
+</html>
