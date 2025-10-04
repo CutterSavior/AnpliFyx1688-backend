@@ -493,6 +493,48 @@ async function initDb() {
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS type VARCHAR(10) DEFAULT 'limit';
     ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now();
 
+    -- 🔐 Web3 錢包地址欄位
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(42) UNIQUE;
+    CREATE INDEX IF NOT EXISTS idx_users_wallet_address ON users(wallet_address);
+
+    -- 為 trades 表新增 symbol 欄位
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS symbol VARCHAR(20) DEFAULT 'BTCUSDT';
+    CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
+
+    -- 🏦 充值錢包管理表
+    CREATE TABLE IF NOT EXISTS deposit_wallets (
+      id SERIAL PRIMARY KEY,
+      wallet_address VARCHAR(42) UNIQUE NOT NULL,
+      wallet_name VARCHAR(100) NOT NULL,
+      network VARCHAR(50) NOT NULL DEFAULT 'ETH',
+      status VARCHAR(20) DEFAULT 'active',
+      created_at TIMESTAMP DEFAULT now(),
+      updated_at TIMESTAMP DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_deposit_wallets_network ON deposit_wallets(network);
+    CREATE INDEX IF NOT EXISTS idx_deposit_wallets_status ON deposit_wallets(status);
+
+    -- 💰 充值交易記錄表
+    CREATE TABLE IF NOT EXISTS deposit_transactions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      from_address VARCHAR(42) NOT NULL,
+      to_address VARCHAR(42) NOT NULL,
+      tx_hash VARCHAR(66) UNIQUE NOT NULL,
+      amount BIGINT NOT NULL,
+      network VARCHAR(50) NOT NULL DEFAULT 'ETH',
+      status VARCHAR(20) DEFAULT 'pending',
+      block_number BIGINT,
+      confirmations INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT now(),
+      confirmed_at TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_deposit_tx_user ON deposit_transactions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_deposit_tx_hash ON deposit_transactions(tx_hash);
+    CREATE INDEX IF NOT EXISTS idx_deposit_tx_status ON deposit_transactions(status);
+    CREATE INDEX IF NOT EXISTS idx_deposit_tx_from ON deposit_transactions(from_address);
+    CREATE INDEX IF NOT EXISTS idx_deposit_tx_to ON deposit_transactions(to_address);
+
     -- 個人作品集（私人空間）
     CREATE TABLE IF NOT EXISTS portfolio_projects (
       id SERIAL PRIMARY KEY,
@@ -515,6 +557,8 @@ async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_portfolio_projects_user ON portfolio_projects(user_id);
     CREATE INDEX IF NOT EXISTS idx_portfolio_projects_status ON portfolio_projects(status);
   `);
+  
+  console.log('✅ 數據庫初始化完成（包含 Web3 錢包支持）');
 }
 
 // initialize with DB readiness retry
@@ -3763,14 +3807,14 @@ app.post('/api/anon/v21/market/stock/overview', (req, res) => {
 });
 
 // ===== 合約/交易對相關 API =====
-// 合約列表
-app.post('/api/anon/v22/contract/item', (req, res) => {
-  const { type = 'crypto' } = req.body || {};
-  // 根據類型返回不同的交易對
+// 📊 統一的交易對數據生成函數（使用真實幣值）
+function generateContractList(type = 'crypto') {
   let symbols = [];
+  
   switch (type) {
     case 'crypto':
     case 'constract':
+    case '':
       symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'DOTUSDT'];
       break;
     case 'forex':
@@ -3791,24 +3835,60 @@ app.post('/api/anon/v22/contract/item', (req, res) => {
       symbols = ['BTCUSDT', 'ETHUSDT'];
   }
   
-  const data = symbols.map(symbol => {
-    const base = 1000 + Math.random() * 50000;
-    const changePct = (Math.random() - 0.5) * 0.08;
-    const price = Math.max(0.0001, base * (1 + changePct));
+  return symbols.map(symbol => {
+    // 🚀 優先使用 Binance 真實價格
+    const realPrice = cryptoPriceCache[symbol];
+    let price, change24h;
+    
+    if (realPrice && realPrice.price) {
+      price = parseFloat(realPrice.price);
+      change24h = parseFloat(realPrice.change24h || '0');
+    } else {
+      // 備用方案：生成模擬價格
+      const basePrice = {
+        'BTCUSDT': 43500, 'ETHUSDT': 2300, 'BNBUSDT': 320, 
+        'SOLUSDT': 98, 'XRPUSDT': 0.52, 'DOGEUSDT': 0.08,
+        'ADAUSDT': 0.45, 'DOTUSDT': 6.5,
+        'EURUSD': 1.08, 'GBPUSD': 1.27, 'USDJPY': 149.5,
+        'XAUUSD': 2050, 'XAGUSD': 24.5, 'WTIUSD': 75.8
+      }[symbol] || 100;
+      
+      price = basePrice * (1 + (Math.random() - 0.5) * 0.02);
+      change24h = (Math.random() - 0.5) * 0.1;
+    }
+    
     return {
       symbol,
       name: symbol.replace('USDT', '/USDT').replace('USD', '/USD'),
-      price,
-      change24h: changePct,
+      price: price.toFixed(symbol.includes('USDT') ? 2 : 4),
+      change24h: (change24h * 100).toFixed(2) + '%',
+      volume24h: (Math.random() * 1000000000).toFixed(2),
+      high24h: (price * 1.05).toFixed(2),
+      low24h: (price * 0.95).toFixed(2),
       type,
-      status: 'trading'
+      status: 'trading',
+      lever: '1,5,10,20,50,100', // 可用槓桿
+      min_amount: '10',
+      max_amount: '1000000'
     };
   });
-  
+}
+
+// 合約列表 API (v22)
+app.post('/api/anon/v22/contract/item', (req, res) => {
+  const { type = 'crypto' } = req.body || {};
+  const data = generateContractList(type);
   res.json({ code: 200, data });
 });
 
-// 合約參數
+// 合約列表 API (v1 - 前端實際調用的)
+app.post('/api/anon/v1/item/futures', (req, res) => {
+  const { type = 'crypto' } = req.body || {};
+  const data = generateContractList(type);
+  res.json({ code: 200, data });
+});
+
+// 合約參數 API (v22)
 app.post('/api/anon/v22/contract/para', (req, res) => {
   return res.json({ 
     code: 200, 
@@ -3817,6 +3897,43 @@ app.post('/api/anon/v22/contract/para', (req, res) => {
       maxAmount: 1000000, 
       feeRate: 0.001,
       leverage: [1, 2, 5, 10, 20, 50, 100]
+    } 
+  });
+});
+
+// 合約參數 API (v1 - 前端調用的)
+app.post('/api/anon/v1/futures/para', (req, res) => {
+  const { symbol } = req.body || {};
+  return res.json({ 
+    code: 200, 
+    data: { 
+      symbol: symbol || 'BTCUSDT',
+      min_amount: 10, 
+      max_amount: 1000000, 
+      fee_rate: 0.001,
+      leverage: [1, 2, 5, 10, 20, 50, 100],
+      maker_fee: 0.0002,
+      taker_fee: 0.0005,
+      price_precision: 2,
+      amount_precision: 4
+    } 
+  });
+});
+
+// 現貨參數 API
+app.post('/api/anon/v1/trade/para', (req, res) => {
+  const { symbol } = req.body || {};
+  return res.json({ 
+    code: 200, 
+    data: { 
+      symbol: symbol || 'BTCUSDT',
+      min_amount: 10, 
+      max_amount: 1000000, 
+      fee_rate: 0.001,
+      maker_fee: 0.0001,
+      taker_fee: 0.0003,
+      price_precision: 2,
+      amount_precision: 4
     } 
   });
 });
@@ -5559,6 +5676,50 @@ io.on('connection', socket => {
       data: [{ price, ts: now, timezone: 'Asia/Taipei' }]
     });
   });
+  
+  // 📊 每秒推送實時幣值更新（所有交易對）
+  socket.data.priceUpdateTimer = setInterval(() => {
+    const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'DOTUSDT'];
+    
+    const priceUpdates = symbols.map(symbol => {
+      // 優先使用真實價格，否則生成模擬價格
+      const cached = cryptoPriceCache[symbol];
+      let price, change24h, volume24h;
+      
+      if (cached && cached.price) {
+        // 在真實價格基礎上添加微小波動 (±0.05%)
+        const fluctuation = 1 + (Math.random() - 0.5) * 0.0005;
+        price = cached.price * fluctuation;
+        change24h = cached.change24h || 0;
+        volume24h = cached.volume24h || 0;
+      } else {
+        // 備用價格
+        const basePrice = {
+          'BTCUSDT': 43500, 'ETHUSDT': 2300, 'BNBUSDT': 320, 
+          'SOLUSDT': 98, 'XRPUSDT': 0.52, 'DOGEUSDT': 0.08,
+          'ADAUSDT': 0.45, 'DOTUSDT': 6.5
+        }[symbol] || 100;
+        
+        price = basePrice * (1 + (Math.random() - 0.5) * 0.001);
+        change24h = (Math.random() - 0.5) * 5;
+        volume24h = Math.random() * 1000000000;
+      }
+      
+      return {
+        symbol,
+        price: price.toFixed(symbol.includes('BTC') || symbol.includes('ETH') ? 2 : 4),
+        change24h: change24h.toFixed(2),
+        volume24h: volume24h.toFixed(2),
+        timestamp: Date.now()
+      };
+    });
+    
+    // 推送給前端
+    socket.emit('price_update', {
+      code: 200,
+      data: priceUpdates
+    });
+  }, 1000); // 每秒更新一次
   
   // 🤖 推送假機器人交易數據 (讓玩家感覺交易所很熱鬧)
   const fakeBotNames = [
