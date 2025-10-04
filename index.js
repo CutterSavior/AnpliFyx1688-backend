@@ -1028,6 +1028,7 @@ async function executeBotOrderFill(order, bot) {
       // 創建成交記錄
       const trade = {
         id: memoryStore.nextTradeId++,
+        symbol: order.symbol, // 添加 symbol
         buy_order_id: order.side === 'buy' ? order.id : null,
         sell_order_id: order.side === 'sell' ? order.id : null,
         price: order.price,
@@ -3123,9 +3124,9 @@ app.post('/api/anon/v1/web3/nonce', async (req, res) => {
   });
 });
 
-// Web3 錢包登入
+// Web3 錢包登入 (支持自動註冊)
 app.post('/api/anon/v1/web3/login', async (req, res) => {
-  const { walletAddress, signature, nonce } = req.body;
+  const { walletAddress, signature, nonce, message: clientMessage } = req.body;
 
   if (!walletAddress || !signature || !nonce) {
     return res.json({
@@ -3161,11 +3162,10 @@ app.post('/api/anon/v1/web3/login', async (req, res) => {
       });
     }
 
-    const message = `歡迎登入 SunExDmoe 娛樂城！\n\n請簽名以驗證您的身份。\n\n錢包地址: ${walletAddress}\nNonce: ${nonce}\n\n此操作不會產生任何費用。`;
-    
+    // 驗證簽名 (使用客戶端傳來的完整消息,包含時間戳)
     let recoveredAddress;
     try {
-      recoveredAddress = ethers.utils.verifyMessage(message, signature);
+      recoveredAddress = ethers.utils.verifyMessage(clientMessage, signature);
     } catch (err) {
       console.error('簽名驗證錯誤:', err);
       return res.json({
@@ -3184,40 +3184,76 @@ app.post('/api/anon/v1/web3/login', async (req, res) => {
     console.log(`✅ 簽名驗證成功: ${address}`);
     web3NonceCache.delete(address);
 
-    let user = await pool.query(
-      'SELECT * FROM users WHERE wallet_address = $1',
-      [address]
-    );
-
-    if (user.rows.length === 0) {
-      const username = `wallet_${address.slice(2, 10)}`;
-      const email = `${address.slice(2, 10)}@web3.user`;
-      const hashedPassword = await bcrypt.hash(address, 10);
+    // 查詢或創建用戶 (自動註冊)
+    let user;
+    if (useMemoryStore) {
+      user = memoryStore.users.find(u => u.wallet_address === address);
       
-      const insertResult = await pool.query(
-        `INSERT INTO users (username, email, password, wallet_address, balance, created_at) 
-         VALUES ($1, $2, $3, $4, $5, NOW()) 
-         RETURNING *`,
-        [username, email, hashedPassword, address, '10000']
+      if (!user) {
+        const username = `wallet_${address.slice(2, 10)}`;
+        const email = `${address.slice(2, 10)}@web3.user`;
+        const hashedPassword = await bcrypt.hash(address, 12);
+        
+        user = {
+          id: memoryStore.nextUserId++,
+          username,
+          email,
+          password_hash: hashedPassword,
+          wallet_address: address,
+          status: 'active',
+          balance: 10000, // 新用戶贈送 100 USDT
+          metadata: {
+            realname: '',
+            phone: '',
+            level: 'NORMAL',
+            google_bound: 'false',
+            identity_verified: 'false',
+            kyc_status: 'none',
+            login_type: 'web3'
+          },
+          created_at: new Date()
+        };
+        
+        memoryStore.users.push(user);
+        console.log(`🆕 創建新 Web3 用戶 (Memory): ${username}`);
+      }
+    } else {
+      const userQuery = await pool.query(
+        'SELECT * FROM users WHERE wallet_address = $1',
+        [address]
       );
-      
-      user = insertResult;
-      console.log(`🆕 創建新 Web3 用戶: ${username}`);
+
+      if (userQuery.rows.length === 0) {
+        const username = `wallet_${address.slice(2, 10)}`;
+        const email = `${address.slice(2, 10)}@web3.user`;
+        const hashedPassword = await bcrypt.hash(address, 12);
+        
+        const insertResult = await pool.query(
+          `INSERT INTO users (username, email, password_hash, wallet_address, balance, status, created_at) 
+           VALUES ($1, $2, $3, $4, $5, $6, NOW()) 
+           RETURNING *`,
+          [username, email, hashedPassword, address, '10000', 'active']
+        );
+        
+        user = insertResult.rows[0];
+        console.log(`🆕 創建新 Web3 用戶 (DB): ${username}`);
+      } else {
+        user = userQuery.rows[0];
+      }
     }
 
-    const userData = user.rows[0];
-    const token = generateToken(userData.id, userData.username);
+    const token = generateToken(user.id, user.username);
 
     res.json({
       code: 200,
       message: 'Web3 登入成功',
       data: {
         auth: token,
-        id: userData.id,
-        username: userData.username,
-        email: userData.email,
-        balance: userData.balance,
-        wallet_address: userData.wallet_address,
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        balance: useMemoryStore ? user.balance : user.balance.toString(),
+        wallet_address: user.wallet_address,
         loginType: 'web3'
       }
     });
@@ -5509,6 +5545,10 @@ io.on('connection', socket => {
       clearInterval(socket.data.klineTimer);
       socket.data.klineTimer = null;
     }
+    if (socket.data?.fakeBotTimer) {
+      clearInterval(socket.data.fakeBotTimer);
+      socket.data.fakeBotTimer = null;
+    }
   });
   socket.on('time', (symbol) => {
     const now = Date.now();
@@ -5519,6 +5559,87 @@ io.on('connection', socket => {
       data: [{ price, ts: now, timezone: 'Asia/Taipei' }]
     });
   });
+  
+  // 🤖 推送假機器人交易數據 (讓玩家感覺交易所很熱鬧)
+  const fakeBotNames = [
+    'Bot_Dragon', 'Bot_Tiger', 'Bot_Phoenix', 'Bot_Wolf', 'Bot_Eagle',
+    'Bot_Lion', 'Bot_Bear', 'Bot_Shark', 'Bot_Falcon', 'Bot_Cobra',
+    'Bot_Panther', 'Bot_Hawk', 'Bot_Fox', 'Bot_Lynx', 'Bot_Viper',
+    'Bot_Leopard', 'Bot_Raven', 'Bot_Cheetah', 'Bot_Jaguar', 'Bot_Puma'
+  ];
+  
+  const fakeMerchantNames = [
+    'Merchant_Gold', 'Merchant_Silver', 'Merchant_Diamond', 'Merchant_Platinum',
+    'Merchant_Ruby', 'Merchant_Sapphire', 'Merchant_Pearl', 'Merchant_Emerald',
+    'Merchant_Topaz', 'Merchant_Jade', 'Merchant_Amber', 'Merchant_Opal'
+  ];
+  
+  const symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT'];
+  
+  // 每 3-8 秒推送一次假交易
+  socket.data.fakeBotTimer = setInterval(() => {
+    // 隨機選擇 1-3 個機器人
+    const botCount = Math.floor(Math.random() * 3) + 1;
+    const fakeOrders = [];
+    
+    for (let i = 0; i < botCount; i++) {
+      const botName = fakeBotNames[Math.floor(Math.random() * fakeBotNames.length)];
+      const symbol = symbols[Math.floor(Math.random() * symbols.length)];
+      const side = Math.random() > 0.5 ? 'buy' : 'sell';
+      
+      // 使用真實價格
+      const basePrice = cryptoPriceCache[symbol]?.price || 50000;
+      const price = basePrice * (1 + (Math.random() - 0.5) * 0.02); // ±1%
+      const amount = (100 + Math.random() * 2000) / price; // $100-2000
+      
+      fakeOrders.push({
+        id: Date.now() + i,
+        username: botName.toLowerCase(),
+        symbol,
+        side,
+        price: price.toFixed(2),
+        amount: amount.toFixed(4),
+        total: (price * amount).toFixed(2),
+        status: 'filled',
+        created_at: new Date().toISOString(),
+        is_bot: true
+      });
+    }
+    
+    // 隨機選擇 0-2 個商家
+    const merchantCount = Math.floor(Math.random() * 3);
+    
+    for (let i = 0; i < merchantCount; i++) {
+      const merchantName = fakeMerchantNames[Math.floor(Math.random() * fakeMerchantNames.length)];
+      const symbol = symbols[Math.floor(Math.random() * symbols.length)];
+      const side = Math.random() > 0.5 ? 'buy' : 'sell';
+      
+      const basePrice = cryptoPriceCache[symbol]?.price || 50000;
+      const price = basePrice * (1 + (Math.random() - 0.5) * 0.001); // ±0.05%
+      const amount = (1000 + Math.random() * 5000) / price; // $1000-6000
+      
+      fakeOrders.push({
+        id: Date.now() + botCount + i,
+        username: merchantName.toLowerCase(),
+        symbol,
+        side,
+        price: price.toFixed(2),
+        amount: amount.toFixed(4),
+        total: (price * amount).toFixed(2),
+        status: 'open',
+        created_at: new Date().toISOString(),
+        is_merchant: true
+      });
+    }
+    
+    // 推送到前端
+    if (fakeOrders.length > 0) {
+      socket.emit('fake_trades', {
+        code: 200,
+        data: fakeOrders
+      });
+    }
+  }, 3000 + Math.random() * 5000); // 3-8秒
 });
 
 // 客服聊天 WebSocket (Socket.IO Namespace)
