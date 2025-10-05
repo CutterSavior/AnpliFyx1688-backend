@@ -6039,6 +6039,129 @@ app.use('*', (req, res) => {
       method: req.method
     });
   }
+  // ==================== 移動端缺失的 API 端點 ====================
+  
+  // 質押訂單列表
+  if (req.path === '/api/authc/v1/pledge/orders' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0, page: 1, pageSize: 10 }
+    });
+  }
+  
+  // 期貨訂單列表
+  if (req.path === '/api/authc/v1/futures/orders' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0, page: 1, pageSize: 10 }
+    });
+  }
+  
+  // 合約訂單列表
+  if (req.path === '/api/authc/v1/contract/orders' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0, page: 1, pageSize: 10 }
+    });
+  }
+  
+  // 跟單訂單列表
+  if (req.path === '/api/authc/v1/copy/orders' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0, page: 1, pageSize: 10 }
+    });
+  }
+  
+  // 借幣訂單列表
+  if (req.path === '/api/authc/v1/loan/orders' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0, page: 1, pageSize: 10 }
+    });
+  }
+  
+  // 資產總覽
+  if (req.path === '/api/authc/v1/assets/overview' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: {
+        totalAssets: '0.00',
+        availableBalance: '0.00',
+        frozenBalance: '0.00',
+        profitLoss: '0.00',
+        profitRate: '0.00'
+      }
+    });
+  }
+  
+  // 資產明細
+  if (req.path === '/api/authc/v1/assets/detail' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0 }
+    });
+  }
+  
+  // 收益記錄
+  if (req.path === '/api/authc/v1/earn/records' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0, totalEarn: '0.00' }
+    });
+  }
+  
+  // 理財產品列表
+  if (req.path === '/api/authc/v1/finance/products' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0 }
+    });
+  }
+  
+  // 持倉列表
+  if (req.path === '/api/authc/v1/positions/list' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0 }
+    });
+  }
+  
+  // 自選列表 (市場-自選)
+  if (req.path === '/api/authc/v1/item/watchlist/list' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: []
+    });
+  }
+  
+  // 添加自選
+  if (req.path === '/api/authc/v1/item/watchlist/add' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '添加成功'
+    });
+  }
+  
+  // 移除自選
+  if (req.path === '/api/authc/v1/item/watchlist/remove' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '移除成功'
+    });
+  }
+  
   // 对其他路径返回HTML 404
   res.status(404).send('Page Not Found');
 });
