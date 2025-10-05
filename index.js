@@ -5754,6 +5754,10 @@ io.on('connection', socket => {
       clearInterval(socket.data.fakeBotTimer);
       socket.data.fakeBotTimer = null;
     }
+    if (socket.data?.priceUpdateTimer) {
+      clearInterval(socket.data.priceUpdateTimer);
+      socket.data.priceUpdateTimer = null;
+    }
   });
   socket.on('time', (symbol) => {
     const now = Date.now();
@@ -6215,6 +6219,79 @@ app.use('*', (req, res) => {
     return res.json({
       code: 200,
       message: '移除成功'
+    });
+  }
+  
+  // KYC 獲取
+  if (req.path === '/api/authc/v1/user/kyc/get' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: {
+        kycLevel: 0,
+        status: 'not_submitted',
+        idNumber: '',
+        realName: '',
+        idCardFront: '',
+        idCardBack: '',
+        submitTime: null,
+        auditTime: null,
+        rejectReason: ''
+      }
+    });
+  }
+  
+  // 交易訂單查詢
+  if (req.path === '/api/authc/v1/trade/orders' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0, page: 1, pageSize: 10 }
+    });
+  }
+  
+  // AI量化參數
+  if (req.path === '/api/anon/v1/aiquant/para' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: {
+        minAmount: 100,
+        maxAmount: 100000,
+        profitRateMin: 5,
+        profitRateMax: 20,
+        duration: 24,
+        riskLevel: 'medium',
+        feeRate: 0.001,
+        available: true
+      }
+    });
+  }
+  
+  // 充值記錄
+  if (req.path === '/api/authc/v1/wallet/deposit/list' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0, page: 1, pageSize: 10 }
+    });
+  }
+  
+  // 提現記錄
+  if (req.path === '/api/authc/v1/wallet/withdraw/list' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0, page: 1, pageSize: 10 }
+    });
+  }
+  
+  // 劃轉記錄
+  if (req.path === '/api/authc/v1/account/transfer/log' && req.method === 'POST') {
+    return res.json({
+      code: 200,
+      message: '查詢成功',
+      data: { list: [], total: 0, page: 1, pageSize: 10 }
     });
   }
   
