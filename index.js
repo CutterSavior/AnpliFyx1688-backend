@@ -1374,6 +1374,41 @@ async function executeMerchantOrderFill(order, merchant) {
 // 啟動應用
 startApplication();
 
+// ==================== 心跳機制 (防止 Render 休眠) ====================
+function startHeartbeat() {
+  const HEARTBEAT_INTERVAL = 10 * 60 * 1000; // 10 分鐘
+  const BACKEND_URL = process.env.BACKEND_URL || 'https://amplifyx1688-backend.onrender.com';
+  
+  console.log('💓 心跳機制已啟動 - 每 10 分鐘自動 Ping 一次');
+  
+  setInterval(async () => {
+    try {
+      const timestamp = new Date().toISOString();
+      console.log(`💓 [${timestamp}] 發送心跳 Ping...`);
+      
+      // 使用 Node.js 內建的 https 模組發送請求
+      const https = require('https');
+      const url = `${BACKEND_URL}/api/anon/v1/heartbeat`;
+      
+      https.get(url, (res) => {
+        if (res.statusCode === 200) {
+          console.log(`✅ [${timestamp}] 心跳成功 - 服務保持活躍`);
+        } else {
+          console.log(`⚠️ [${timestamp}] 心跳響應碼: ${res.statusCode}`);
+        }
+      }).on('error', (err) => {
+        console.error(`❌ [${timestamp}] 心跳失敗:`, err.message);
+      });
+      
+    } catch (error) {
+      console.error('心跳錯誤:', error.message);
+    }
+  }, HEARTBEAT_INTERVAL);
+}
+
+// 啟動心跳機制
+startHeartbeat();
+
 // 工具函數
 const generateToken = (userId, username) => {
   return jwt.sign(
@@ -2957,6 +2992,27 @@ app.post('/api/anon/v1/support/list', (req, res) => {
   res.json({
     code: 200,
     data: []
+  });
+});
+
+// ==================== 心跳端點 (Keep-Alive) ====================
+app.get('/api/anon/v1/heartbeat', (req, res) => {
+  res.json({
+    code: 200,
+    message: '💓 心跳正常',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    status: 'alive'
+  });
+});
+
+// 健康檢查端點 (Render 官方推薦)
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
   });
 });
 
