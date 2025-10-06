@@ -57,6 +57,7 @@ const io = new Server(server, {
       // A平台生产域名
       'https://admin-amplifyx1688.pages.dev',  // A平台预期生产环境
       'https://tw-amplfyx.online',  // A平台实际域名
+      'https://admin.andy123.net',  // Admin 自訂網域
       
       // ENS 域名（新增）
       'https://game.sunexdmoe.eth.limo',
@@ -103,6 +104,7 @@ app.use(cors({
     // A平台生产域名
     'https://admin-amplifyx1688.pages.dev',  // A平台预期生产环境
     'https://tw-amplfyx.online',  // A平台实际域名（注意：amplfyx缺少i）
+    'https://admin.andy123.net',  // Admin 自訂網域
     
     // ENS 域名（新增）
     'https://game.sunexdmoe.eth.limo',
@@ -3381,6 +3383,184 @@ app.post('/api/anon/v1/web3/login', async (req, res) => {
   }
 });
 
+// ==================== Web3 錢包登入 API - 版本化別名 (保持與舊路由相同行為) ====================
+
+// 別名：獲取 Web3 Nonce -> /api/v1/auth/web3/nonce
+app.post('/api/v1/auth/web3/nonce', async (req, res) => {
+  const { walletAddress } = req.body;
+
+  if (!walletAddress) {
+    return res.json({
+      code: 400,
+      message: '缺少錢包地址參數'
+    });
+  }
+
+  const address = walletAddress.toLowerCase();
+  const nonce = generateWeb3Nonce();
+  const timestamp = Date.now();
+
+  web3NonceCache.set(address, {
+    nonce,
+    timestamp,
+    expiresIn: 15 * 60 * 1000
+  });
+
+  console.log(`✅ [v1] 為地址 ${address} 生成 Nonce: ${nonce}`);
+
+  res.json({
+    code: 200,
+    data: {
+      nonce,
+      timestamp,
+      message: '請使用您的錢包簽名此消息'
+    }
+  });
+});
+
+// 別名：Web3 錢包登入 -> /api/v1/auth/web3/login
+app.post('/api/v1/auth/web3/login', async (req, res) => {
+  const { walletAddress, signature, nonce, message: clientMessage } = req.body;
+
+  if (!walletAddress || !signature || !nonce) {
+    return res.json({
+      code: 400,
+      message: '參數不完整'
+    });
+  }
+
+  const address = walletAddress.toLowerCase();
+
+  try {
+    const storedNonce = web3NonceCache.get(address);
+
+    if (!storedNonce) {
+      return res.json({
+        code: 400,
+        message: 'Nonce 不存在或已過期，請重新獲取'
+      });
+    }
+
+    if (storedNonce.nonce !== nonce) {
+      return res.json({
+        code: 400,
+        message: 'Nonce 不匹配'
+      });
+    }
+
+    if (Date.now() - storedNonce.timestamp > storedNonce.expiresIn) {
+      web3NonceCache.delete(address);
+      return res.json({
+        code: 400,
+        message: 'Nonce 已過期，請重新獲取'
+      });
+    }
+
+    // 驗證簽名
+    let recoveredAddress;
+    try {
+      recoveredAddress = ethers.utils.verifyMessage(clientMessage, signature);
+    } catch (err) {
+      console.error('[v1] 簽名驗證錯誤:', err);
+      return res.json({
+        code: 400,
+        message: '簽名格式錯誤'
+      });
+    }
+
+    if (recoveredAddress.toLowerCase() !== address) {
+      return res.json({
+        code: 400,
+        message: '簽名驗證失敗'
+      });
+    }
+
+    console.log(`✅ [v1] 簽名驗證成功: ${address}`);
+    web3NonceCache.delete(address);
+
+    // 查詢或創建用戶 (自動註冊)
+    let user;
+    if (useMemoryStore) {
+      user = memoryStore.users.find(u => u.wallet_address === address);
+
+      if (!user) {
+        const username = `wallet_${address.slice(2, 10)}`;
+        const email = `${address.slice(2, 10)}@web3.user`;
+        const hashedPassword = await bcrypt.hash(address, 12);
+
+        user = {
+          id: memoryStore.nextUserId++,
+          username,
+          email,
+          password_hash: hashedPassword,
+          wallet_address: address,
+          status: 'active',
+          balance: 10000,
+          metadata: {
+            realname: '',
+            phone: '',
+            level: 'NORMAL',
+            google_bound: 'false',
+            identity_verified: 'false',
+            kyc_status: 'none',
+            login_type: 'web3'
+          },
+          created_at: new Date()
+        };
+
+        memoryStore.users.push(user);
+        console.log(`🆕 [v1] 創建新 Web3 用戶 (Memory): ${username}`);
+      }
+    } else {
+      const userQuery = await pool.query(
+        'SELECT * FROM users WHERE wallet_address = $1',
+        [address]
+      );
+
+      if (userQuery.rows.length === 0) {
+        const username = `wallet_${address.slice(2, 10)}`;
+        const email = `${address.slice(2, 10)}@web3.user`;
+        const hashedPassword = await bcrypt.hash(address, 12);
+
+        const insertResult = await pool.query(
+          `INSERT INTO users (username, email, password_hash, wallet_address, balance, status, created_at) 
+           VALUES ($1, $2, $3, $4, $5, $6, NOW()) 
+           RETURNING *`,
+          [username, email, hashedPassword, address, '10000', 'active']
+        );
+
+        user = insertResult.rows[0];
+        console.log(`🆕 [v1] 創建新 Web3 用戶 (DB): ${username}`);
+      } else {
+        user = userQuery.rows[0];
+      }
+    }
+
+    const token = generateToken(user.id, user.username);
+
+    res.json({
+      code: 200,
+      message: 'Web3 登入成功',
+      data: {
+        auth: token,
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        balance: useMemoryStore ? user.balance : user.balance.toString(),
+        wallet_address: user.wallet_address,
+        loginType: 'web3'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [v1] Web3 登入失敗:', error);
+    res.json({
+      code: 500,
+      message: 'Web3 登入失敗: ' + error.message
+    });
+  }
+});
+
 // 彈窗公告 API
 app.post('/api/authc/v1/notice/popup', authenticateToken, (req, res) => {
   // 返回空列表，表示沒有彈窗公告
@@ -6297,4 +6477,336 @@ app.use('*', (req, res) => {
   
   // 对其他路径返回HTML 404
   res.status(404).send('Page Not Found');
+});
+
+// ==========================================
+// 新增的WebSocket和交易API功能
+// ==========================================
+
+// WebSocket信息接口
+app.get('/api/ws/info', (req, res) => {
+  res.json({
+    code: 200,
+    message: '獲取成功',
+    data: {
+      host: 'ws://api.andy123.net:3000',
+      port: 3000,
+      path: '/ws',
+      reconnect: true,
+      reconnectInterval: 3000,
+      maxReconnectAttempts: 5
+    }
+  });
+});
+
+// WebSocket模擬數據推送
+app.post('/api/ws/push', (req, res) => {
+  const { type, channel, data } = req.body;
+  
+  // 根據類型生成模擬數據
+  let responseData = {};
+  
+  switch (type) {
+    case 'kline':
+      responseData = generateKlineData(channel);
+      break;
+    case 'orderbook':
+      responseData = generateOrderBookData(channel);
+      break;
+    case 'trades':
+      responseData = generateTradesData(channel);
+      break;
+    case 'price':
+      responseData = generatePriceData(channel);
+      break;
+    default:
+      responseData = { message: 'Hello from WebSocket' };
+  }
+  
+  res.json({
+    code: 200,
+    message: '推送成功',
+    data: {
+      type,
+      channel,
+      data: responseData,
+      timestamp: Date.now()
+    }
+  });
+});
+
+// WebSocket模擬數據生成
+app.get('/api/ws/simulate', (req, res) => {
+  const channels = [
+    'kline:BTCUSDT:1m',
+    'kline:ETHUSDT:1m',
+    'kline:BNBUSDT:1m',
+    'orderbook:BTCUSDT',
+    'orderbook:ETHUSDT',
+    'trades:BTCUSDT',
+    'trades:ETHUSDT',
+    'price:BTCUSDT',
+    'price:ETHUSDT'
+  ];
+  
+  const results = channels.map(channel => {
+    const [type, symbol, timeframe] = channel.split(':');
+    return {
+      channel,
+      type,
+      data: generateDataByType(type, channel),
+      timestamp: Date.now()
+    };
+  });
+  
+  res.json({
+    code: 200,
+    message: '模擬數據生成成功',
+    data: results
+  });
+});
+
+// 生成K線數據
+function generateKlineData(channel) {
+  const symbol = extractSymbol(channel);
+  const basePrice = getBasePrice(symbol);
+  
+  const timestamp = Date.now();
+  const open = basePrice + (Math.random() - 0.5) * 100;
+  const close = open + (Math.random() - 0.5) * 50;
+  const high = Math.max(open, close) + Math.random() * 30;
+  const low = Math.min(open, close) - Math.random() * 30;
+  const volume = Math.random() * 1000000;
+  
+  return {
+    timestamp,
+    open: Number(open.toFixed(2)),
+    high: Number(high.toFixed(2)),
+    low: Number(low.toFixed(2)),
+    close: Number(close.toFixed(2)),
+    volume: Number(volume.toFixed(0))
+  };
+}
+
+// 生成訂單簿數據
+function generateOrderBookData(channel) {
+  const symbol = extractSymbol(channel);
+  const basePrice = getBasePrice(symbol);
+  
+  const bids = [];
+  const asks = [];
+  
+  // 生成買單
+  for (let i = 0; i < 10; i++) {
+    const price = basePrice - (i + 1) * 0.01;
+    const amount = Math.random() * 1000 + 100;
+    bids.push([Number(price.toFixed(2)), Number(amount.toFixed(2))]);
+  }
+  
+  // 生成賣單
+  for (let i = 0; i < 10; i++) {
+    const price = basePrice + (i + 1) * 0.01;
+    const amount = Math.random() * 1000 + 100;
+    asks.push([Number(price.toFixed(2)), Number(amount.toFixed(2))]);
+  }
+  
+  return {
+    bids,
+    asks,
+    timestamp: Date.now()
+  };
+}
+
+// 生成成交數據
+function generateTradesData(channel) {
+  const symbol = extractSymbol(channel);
+  const basePrice = getBasePrice(symbol);
+  
+  const trades = [];
+  for (let i = 0; i < 5; i++) {
+    const price = basePrice + (Math.random() - 0.5) * 50;
+    const amount = Math.random() * 100 + 10;
+    const side = Math.random() > 0.5 ? 'buy' : 'sell';
+    
+    trades.push({
+      id: Date.now() + i,
+      price: Number(price.toFixed(2)),
+      amount: Number(amount.toFixed(2)),
+      side,
+      timestamp: Date.now() - i * 1000
+    });
+  }
+  
+  return trades;
+}
+
+// 生成價格數據
+function generatePriceData(channel) {
+  const symbol = extractSymbol(channel);
+  const basePrice = getBasePrice(symbol);
+  
+  const price = basePrice + (Math.random() - 0.5) * 20;
+  const change = (Math.random() - 0.5) * 5;
+  const changePercent = (change / basePrice) * 100;
+  
+  return {
+    price: Number(price.toFixed(2)),
+    change: Number(change.toFixed(2)),
+    changePercent: Number(changePercent.toFixed(2)),
+    timestamp: Date.now()
+  };
+}
+
+// 從頻道名提取交易對
+function extractSymbol(channel) {
+  if (channel.includes(':')) {
+    const parts = channel.split(':');
+    return parts[1] || 'BTCUSDT';
+  }
+  return 'BTCUSDT';
+}
+
+// 獲取基礎價格
+function getBasePrice(symbol) {
+  const prices = {
+    'BTCUSDT': 43500,
+    'ETHUSDT': 2650,
+    'BNBUSDT': 320,
+    'SOLUSDT': 95,
+    'XRPUSDT': 0.52,
+    'DOGEUSDT': 0.08,
+    'ADAUSDT': 0.45,
+    'DOTUSDT': 6.5
+  };
+  
+  return prices[symbol] || 100;
+}
+
+// 根據類型生成數據
+function generateDataByType(type, channel) {
+  switch (type) {
+    case 'kline':
+      return generateKlineData(channel);
+    case 'orderbook':
+      return generateOrderBookData(channel);
+    case 'trades':
+      return generateTradesData(channel);
+    case 'price':
+      return generatePriceData(channel);
+    default:
+      return { message: 'Unknown type' };
+  }
+}
+
+// 新增交易API路由
+app.get('/api/kline', (req, res) => {
+  const { symbol = 'BTCUSDT', interval = '1m' } = req.query;
+  const data = generateKlineData(`kline:${symbol}:${interval}`);
+  res.json({
+    code: 200,
+    message: '獲取成功',
+    data: [data]
+  });
+});
+
+app.get('/api/orderbook', (req, res) => {
+  const { symbol = 'BTCUSDT' } = req.query;
+  const data = generateOrderBookData(`orderbook:${symbol}`);
+  res.json({
+    code: 200,
+    message: '獲取成功',
+    data
+  });
+});
+
+app.get('/api/trades', (req, res) => {
+  const { symbol = 'BTCUSDT' } = req.query;
+  const data = generateTradesData(`trades:${symbol}`);
+  res.json({
+    code: 200,
+    message: '獲取成功',
+    data
+  });
+});
+
+app.get('/api/orders/current', (req, res) => {
+  res.json({
+    code: 200,
+    message: '獲取成功',
+    data: []
+  });
+});
+
+app.get('/api/orders/history', (req, res) => {
+  res.json({
+    code: 200,
+    message: '獲取成功',
+    data: []
+  });
+});
+
+app.get('/api/price', (req, res) => {
+  const { symbol = 'BTCUSDT' } = req.query;
+  const data = generatePriceData(`price:${symbol}`);
+  res.json({
+    code: 200,
+    message: '獲取成功',
+    data
+  });
+});
+
+// 用戶相關API
+app.get('/api/user/info', (req, res) => {
+  res.json({
+    code: 200,
+    message: '獲取成功',
+    data: {
+      id: 1,
+      username: 'testuser',
+      email: 'test@example.com',
+      balance: 10000
+    }
+  });
+});
+
+app.get('/api/user/balance', (req, res) => {
+  res.json({
+    code: 200,
+    message: '獲取成功',
+    data: {
+      balance: 10000,
+      currency: 'USDT'
+    }
+  });
+});
+
+// 交易操作API
+app.post('/api/trade/place', (req, res) => {
+  res.json({
+    code: 200,
+    message: '下單成功',
+    data: {
+      orderId: Date.now(),
+      status: 'pending'
+    }
+  });
+});
+
+app.post('/api/trade/cancel', (req, res) => {
+  res.json({
+    code: 200,
+    message: '取消成功',
+    data: {
+      orderId: req.body.orderId,
+      status: 'cancelled'
+    }
+  });
+});
+
+app.get('/api/trade/positions', (req, res) => {
+  res.json({
+    code: 200,
+    message: '獲取成功',
+    data: []
+  });
 });
